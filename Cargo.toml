@@ -25,3 +25,6 @@ uuid = { version = "1.29.0", features = ["serde", "v4"] }
 
 [profile.release]
 strip = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
