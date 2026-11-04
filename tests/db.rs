@@ -140,6 +140,38 @@ async fn validation_errors_reach_the_model() {
 }
 
 #[tokio::test]
+async fn unknown_fields_are_rejected_not_dropped() {
+    let (v, _, _) = setup().await;
+    let a = uid("alice");
+    let typo = v
+        .reading_add(
+            p(json!({"kind": "body", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0, "fatpct": 21.5}]})),
+            as_user(&a),
+        )
+        .await;
+    assert!(typo.unwrap_err().contains("fatpct"));
+    assert_eq!(sql(&v, &a, "SELECT * FROM body").await.unwrap()["rows"], json!([]));
+
+    v.reading_add(
+        p(json!({"kind": "body", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0}]})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    let upd = v
+        .reading_update(
+            p(json!({"kind": "body", "time": "2026-10-01T07:00:00Z", "set": {"weight_kg": 81.0, "weightkg": 82.0}})),
+            as_user(&a),
+        )
+        .await;
+    assert!(upd.unwrap_err().contains("weightkg"));
+    assert_eq!(
+        sql(&v, &a, "SELECT weight_kg FROM body").await.unwrap()["rows"],
+        json!([{"weight_kg": 80}])
+    );
+}
+
+#[tokio::test]
 async fn imported_readings_are_read_only() {
     let (v, db, owner) = setup().await;
     let a = uid("alice");

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::http::request::Parts;
 use chrono::{DateTime, Duration, Utc};
 use rmcp::handler::server::tool::{Extension, ToolRouter};
@@ -67,11 +69,24 @@ pub struct Values {
     pub temp_c: Option<f64>,
     /// Free-text note.
     pub note: Option<String>,
+    /// Anything else the caller sent. Rejected in `to_object`: serde would otherwise drop a misspelled
+    /// field silently (`deny_unknown_fields` does not work together with `flatten`).
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    pub unknown: BTreeMap<String, Value>,
 }
 
 impl Values {
     /// Non-null fields as a JSON object; errors on fields that don't belong to `kind`.
     fn to_object(&self, kind: Kind) -> Result<Map<String, Value>, String> {
+        if !self.unknown.is_empty() {
+            return Err(format!(
+                "unknown field(s) {:?} (allowed for kind '{}': {:?})",
+                self.unknown.keys().collect::<Vec<_>>(),
+                kind.table(),
+                kind.fields()
+            ));
+        }
         let Value::Object(mut m) = serde_json::to_value(self).expect("plain struct") else {
             unreachable!()
         };
@@ -657,5 +672,19 @@ impl ServerHandler for Vitals {
              schema_describe + sql_query for anything else. Write tools only change readings logged manually \
              (source 'manual'); imported readings are read-only. Convert lb to kg and °F to °C before logging.",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn flattened_reading_keeps_time_out_of_unknown() {
+        let r: Reading =
+            serde_json::from_value(json!({"time": "2026-10-01T07:00:00Z", "bpm": 60, "bpmm": 61})).unwrap();
+        assert_eq!(r.values.bpm, Some(60));
+        assert_eq!(r.values.unknown.keys().collect::<Vec<_>>(), ["bpmm"]);
     }
 }
