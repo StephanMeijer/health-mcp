@@ -649,10 +649,10 @@ sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'l
 
 Raw chest-strap frames (source 'polar_h10'); one row per frame, sample i is at time + (i - 1) / sample_rate seconds:
 ecg            (time, user_id, source, device_id, sample_rate smallint, samples int[])   -- µV, 130 Hz
-acc            (time, user_id, source, device_id, sample_rate smallint, x int[], y int[], z int[])  -- milli-g, 1000 ≈ 1 g
+acc            (time, user_id, source, device_id, sample_rate smallint, x smallint[], y smallint[], z smallint[])  -- milli-g, 1000 ≈ 1 g, 200 Hz
 device_battery (time, user_id, source, device_id, level smallint)  -- %
 device_event   (time, user_id, source, device_id, event text)      -- e.g. connected, disconnected
-ecg and acc are ~11k and ~17k samples per minute: aggregate with time_bucket, never return raw arrays for long periods.
+ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with time_bucket, never return raw arrays for long periods.
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
 source is 'manual' for readings logged through this server, 'polar_h10' for the chest strap, otherwise the importer name (e.g. 'withings').
