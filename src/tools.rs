@@ -640,14 +640,22 @@ const MAX_SQL_ROWS: usize = 1000;
 
 const SCHEMA_DOC: &str = r#"Views (only your own rows are visible; times are timestamptz, UTC unless you convert):
 
-heart_rate     (time, user_id, source, bpm smallint, note)
+heart_rate     (time, user_id, source, bpm smallint, note, rr_ms smallint[])  -- rr_ms: beat-to-beat intervals (chest strap only)
 hrv            (time, user_id, source, rmssd_ms real, note)            -- RMSSD in ms
 blood_pressure (time, user_id, source, systolic smallint, diastolic smallint, pulse smallint, note)  -- mmHg, bpm
 body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note)  -- any subset non-null
 sleep_session  (id uuid, user_id, source, start_at, end_at, note)
 sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'light'|'deep'|'rem', duration_s int)
 
-source is 'manual' for readings logged through this server, otherwise the importer name (e.g. 'withings').
+Raw chest-strap frames (source 'polar_h10'); one row per frame, sample i is at time + (i - 1) / sample_rate seconds:
+ecg            (time, user_id, source, device_id, sample_rate smallint, samples int[])   -- µV, 130 Hz
+acc            (time, user_id, source, device_id, sample_rate smallint, x smallint[], y smallint[], z smallint[])  -- milli-g, 1000 ≈ 1 g, 200 Hz
+device_battery (time, user_id, source, device_id, level smallint)  -- %
+device_event   (time, user_id, source, device_id, event text)      -- e.g. connected, disconnected
+ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with time_bucket, never return raw arrays for long periods.
+Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
+
+source is 'manual' for readings logged through this server, 'polar_h10' for the chest strap, otherwise the importer name (e.g. 'withings').
 
 Examples:
 -- daily average and max heart rate, Amsterdam days

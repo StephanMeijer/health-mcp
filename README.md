@@ -2,6 +2,7 @@
 
 A remote MCP server that stores and queries personal vitals (heart rate, HRV, blood pressure, body metrics and sleep) in TimescaleDB.
 It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and offers typed tools plus a read-only SQL tool.
+Raw Polar H10 chest-strap data arrives through an ingest API (`POST /api/v1/ingest`).
 Design and security model: [SPEC.md](SPEC.md).
 
 ## Run
@@ -33,6 +34,9 @@ Don't give `vitals_reader` any grant on `vitals_data`. Chunks would inherit it w
 
 **Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
 (full snippet in SPEC.md). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
+For the vitals-app phone app, register a second, public client `vitals-android` (PKCE, `offline_access`,
+`audience: ['<PUBLIC_URL>/api']`, a long refresh-token lifespan; snippet in SPEC.md, Ingest API).
+In the app, enter only `<PUBLIC_URL>`; it uploads to `/api/v1/ingest` and discovers the rest.
 
 ## Develop
 

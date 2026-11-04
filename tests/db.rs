@@ -478,3 +478,206 @@ async fn imported_sleep_is_read_only() {
     let row = sql(&v, &a, "SELECT source, note FROM sleep_session").await.unwrap();
     assert_eq!(row["rows"], json!([{"source": "withings", "note": null}]));
 }
+
+// Ingest ----------------------------------------------------------------------
+
+async fn post_ingest(db: &Db, user: &str, content_type: &str, encoding: Option<&str>, body: Vec<u8>) -> (u16, Value) {
+    use tower::ServiceExt;
+    let app: axum::Router = vitals_mcp::ingest::router(db.clone()).layer(axum::Extension(User(user.to_owned())));
+    let mut req = Request::post("/v1/ingest").header("content-type", content_type);
+    if let Some(e) = encoding {
+        req = req.header("content-encoding", e);
+    }
+    let res = app
+        .oneshot(req.body(axum::body::Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+fn polar_batch() -> Vec<u8> {
+    [
+        json!({"type": "hr", "device_id": "244E7234", "time": "2026-10-02T08:00:00.123456Z", "bpm": 61, "rr_ms": [980, 990]}),
+        json!({"type": "ecg", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": [-12, 40, 7]}),
+        json!({"type": "acc", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "sample_rate": 200,
+               "x": [1, 2], "y": [3, 4], "z": [-1000, -999]}),
+        json!({"type": "battery", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "level": 87}),
+        json!({"type": "status", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "event": "connected"}),
+    ]
+    .iter()
+    .map(|f| f.to_string() + "\n")
+    .collect::<String>()
+    .into_bytes()
+}
+
+#[tokio::test]
+async fn ingest_stores_once_and_shows_up_in_tools() {
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", None, polar_batch()).await,
+        (200, json!({"frames": 5, "inserted": 5}))
+    );
+    // A retried batch is a no-op, also zstd-compressed.
+    let zstd = zstd::encode_all(&polar_batch()[..], 1).unwrap();
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), zstd).await,
+        (200, json!({"frames": 5, "inserted": 0}))
+    );
+
+    let list: Value = serde_json::from_str(
+        &v.reading_list(
+            p(json!({"kind": "heart_rate", "source": "polar_h10", "from": "2026-10-01T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(list[0]["bpm"], 61);
+    assert_eq!(list[0]["rr_ms"], json!([980, 990]));
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT (SELECT samples FROM ecg) AS ecg, (SELECT z FROM acc) AS z, (SELECT level FROM device_battery) AS level,
+                (SELECT event FROM device_event) AS event, (SELECT rr_ms FROM heart_rate) AS rr_ms",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rows["rows"][0],
+        json!({"ecg": [-12, 40, 7], "z": [-1000, -999], "level": 87, "event": "connected", "rr_ms": [980, 990]})
+    );
+    // Another user sees none of it.
+    let b = uid("bob");
+    let rows = sql(
+        &v,
+        &b,
+        "SELECT (SELECT count(*) FROM ecg) + (SELECT count(*) FROM heart_rate) AS n",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows["rows"][0]["n"], 0);
+}
+
+#[tokio::test]
+async fn ingest_is_all_or_nothing() {
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    let mut body = polar_batch();
+    body.extend_from_slice(br#"{"type":"hr","device_id":"d","time":"2026-10-02T08:00:01Z","bpm":0}"#);
+    let (status, err) = post_ingest(&db, &a, "application/x-ndjson", None, body).await;
+    assert_eq!((status, &err["frame"]), (400, &json!(5)));
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT (SELECT count(*) FROM ecg) + (SELECT count(*) FROM heart_rate) AS n",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows["rows"][0]["n"], 0);
+}
+
+#[tokio::test]
+async fn ingest_rejects_unsupported_requests() {
+    let (_, db, _) = setup().await;
+    let a = uid("alice");
+    assert_eq!(
+        post_ingest(&db, &a, "application/json", None, b"[]".to_vec()).await.0,
+        415
+    );
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", Some("br-nope"), polar_batch())
+            .await
+            .0,
+        415
+    );
+    let huge = vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1];
+    assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, huge).await.0, 413);
+    // The cap applies after decompression: a small zstd body that inflates past it is refused too.
+    let bomb = zstd::encode_all(&vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1][..], 19).unwrap();
+    assert!(bomb.len() < 1 << 20);
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), bomb).await.0,
+        413
+    );
+    // Empty heartbeat batches are fine.
+    assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, vec![]).await.0, 200);
+}
+
+#[tokio::test]
+async fn app_role_cannot_write_other_sources_or_users() {
+    let (_, db, _) = setup().await;
+    let (a, b) = (uid("alice"), uid("bob"));
+    for (user, source) in [(&a, "evil"), (&b, "polar_h10")] {
+        let mut tx = db.app_tx(&a).await.unwrap();
+        let err =
+            sqlx::query("INSERT INTO vitals_data.heart_rate (time, user_id, source, bpm) VALUES (now(), $1, $2, 60)")
+                .bind(user)
+                .bind(source)
+                .execute(&mut *tx)
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("row-level security"), "{err}");
+    }
+    // Raw strap tables have no RLS (for compression); the app role may only insert, never read them.
+    let mut tx = db.app_tx(&a).await.unwrap();
+    let err = sqlx::query("SELECT 1 FROM vitals_data.ecg")
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("permission denied"), "{err}");
+}
+
+#[tokio::test]
+async fn ingest_dedups_into_compressed_chunks() {
+    let (_, db, owner) = setup().await;
+    let a = uid("alice");
+    // A day no other test writes to, so compressing its chunks can't disturb them.
+    let frame = |kind: &str, sec: u32| {
+        let t = format!("2026-09-15T08:00:{sec:02}Z");
+        match kind {
+            "ecg" => json!({"type": "ecg", "device_id": "d", "time": t, "sample_rate": 130, "samples": [1, 2]}),
+            _ => json!({"type": "acc", "device_id": "d", "time": t, "sample_rate": 200, "x": [1], "y": [2], "z": [3]}),
+        }
+        .to_string()
+            + "\n"
+    };
+    let batch = frame("ecg", 0) + &frame("acc", 0);
+    let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
+    assert_eq!(post(batch.clone()).await, (200, json!({"frames": 2, "inserted": 2})));
+
+    // The 8-day compression policy may compress the same chunk concurrently (it runs right after migrating a
+    // fresh DB); compress_chunk then raises 42710 despite if_not_compressed. The assertion below is the real check.
+    sqlx::query(
+        "DO $$ DECLARE c regclass; BEGIN
+           FOR c IN SELECT show_chunks(t, older_than => '2026-09-16'::timestamptz, newer_than => '2026-09-15'::timestamptz)
+                      FROM unnest('{vitals_data.ecg,vitals_data.acc}'::regclass[]) t LOOP
+             BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
+             EXCEPTION WHEN duplicate_object THEN NULL;
+             END;
+           END LOOP;
+         END $$",
+    )
+    .execute(&owner)
+    .await
+    .unwrap();
+    let compressed: bool = sqlx::query_scalar(
+        "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
+          WHERE hypertable_schema = 'vitals_data' AND hypertable_name IN ('ecg', 'acc')
+            AND range_start = '2026-09-15'",
+    )
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+    assert!(compressed);
+
+    // The app role retries into the compressed chunks: duplicates are still skipped, new frames still land.
+    assert_eq!(post(batch).await, (200, json!({"frames": 2, "inserted": 0})));
+    assert_eq!(
+        post(frame("ecg", 0) + &frame("ecg", 1)).await,
+        (200, json!({"frames": 2, "inserted": 1}))
+    );
+}
