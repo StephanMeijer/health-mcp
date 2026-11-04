@@ -1,13 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::{Router, middleware, routing::get};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
-};
 use sqlx::postgres::PgPoolOptions;
 use tokio::signal::unix::{SignalKind, signal};
-use vitals_mcp::{auth, db::Db, ingest, tools::Vitals};
+use vitals_mcp::{auth, db::Db};
 
 fn env(key: &str) -> anyhow::Result<String> {
     std::env::var(key).with_context(|| format!("{key} must be set"))
@@ -53,31 +49,7 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("OIDC discovery")?,
     );
-    let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(api_verifier.clone(), auth::require));
-
-    // Stateless: any replica can serve any request, no sticky sessions needed in K8s.
-    let mcp = StreamableHttpService::new(
-        move || Ok(Vitals::new(db.clone())),
-        Arc::new(NeverSessionManager::default()),
-        StreamableHttpServerConfig::default()
-            .with_legacy_session_mode(false)
-            .with_json_response(true)
-            .with_allowed_hosts([host]),
-    );
-
-    let app = Router::new()
-        .nest_service("/mcp", mcp)
-        .layer(middleware::from_fn_with_state(verifier.clone(), auth::require))
-        // After the MCP auth layer, which only wraps routes added before it.
-        .nest("/api", api)
-        .route("/.well-known/oauth-protected-resource", get(auth::metadata))
-        .route("/.well-known/oauth-protected-resource/mcp", get(auth::metadata))
-        .route(
-            "/.well-known/oauth-protected-resource/api",
-            get(auth::metadata).with_state(api_verifier),
-        )
-        .route("/healthz", get(|| async { "ok" }))
-        .with_state(verifier);
+    let app = vitals_mcp::app(db, host, verifier, api_verifier);
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
