@@ -146,5 +146,8 @@ Endpoints: `/mcp` (stateless streamable HTTP), `/.well-known/oauth-protected-res
 
 ## Known limits
 
+- Two transactions that each insert the first `sleep_stage` rows of a new time range (each creating a TimescaleDB chunk)
+  can deadlock (`40P01`): chunk creation copies the foreign key to `sleep_session` and locks it. Postgres aborts one of them;
+  importers should retry on `40P01`. Rare in practice: a chunk spans 7 days.
 - `pg_stat_activity` shows the *text* of other users' running `sql_query` calls (it's the same reader role), but not their data.
 - Not tested against a real Authelia token or the claude.ai connector flow; only a locally minted `at+jwt` was used.
