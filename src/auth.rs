@@ -133,7 +133,10 @@ pub async fn require(State(v): State<Arc<Verifier>>, mut req: Request, next: Nex
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
+        // RFC 7235 §2.1: the auth scheme is case-insensitive.
+        .and_then(|h| h.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+        .map(|(_, t)| t);
     let error = match token {
         None => None,
         Some(t) => match v.verify(t).await {
@@ -361,8 +364,10 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_passes_the_subject_to_the_handler() {
-        let bearer = format!("Bearer {}", token("at+jwt", claims(ISS, AUD, 300)));
-        assert_eq!(call("/mcp", Some(bearer)).await, (StatusCode::OK, None, "alice".into()));
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            let bearer = format!("{scheme} {}", token("at+jwt", claims(ISS, AUD, 300)));
+            assert_eq!(call("/mcp", Some(bearer)).await, (StatusCode::OK, None, "alice".into()));
+        }
     }
 
     #[tokio::test]
