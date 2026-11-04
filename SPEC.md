@@ -7,9 +7,10 @@ It supports multiple users. Each user sees only their own data, and Postgres enf
 
 **In scope:** heart rate, HRV, blood pressure, body metrics (weight, body fat, SpO2, temperature) and sleep.
 Manual logging and correction through MCP tools. Typed query tools and a read-only SQL tool.
+An ingest API for raw chest-strap frames (Polar H10 via the vitals-app Android app).
 Auth with OAuth 2.1 as a resource server. A Dockerfile.
 
-**Out of scope:** importers (they write to the DB directly and are trusted to set `user_id` and `source` correctly),
+**Out of scope:** other importers (they write to the DB directly and are trusted to set `user_id` and `source` correctly),
 the IdP itself, Kubernetes manifests, continuous aggregates (they don't support RLS), alerts and a UI.
 
 ## Stack
@@ -65,7 +66,7 @@ Base tables live in schema `vitals_data`; importers write there. Every vitals ta
 natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`.
 
 ```sql
-heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text)
+heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[])
 hrv            (time, user_id, source, rmssd_ms real NOT NULL, note text)
 blood_pressure (time, user_id, source, systolic smallint NOT NULL, diastolic smallint NOT NULL,
                 pulse smallint, note text)
@@ -77,6 +78,26 @@ sleep_session  (id uuid PK, user_id, source, start_at, end_at, note text,
 sleep_stage    (time, user_id, session_id → sleep_session ON DELETE CASCADE,
                 stage text CHECK (stage IN ('awake','light','deep','rem')), duration_s int NOT NULL)  -- hypertable
 ```
+
+Raw frames from the ingest API (`source = 'polar_h10'`), one row per frame as the device sent it, keyed
+`UNIQUE (user_id, source, device_id, time)`. `time` is the first sample; sample `i` (0-based) is at `time + i / sample_rate`.
+
+```sql
+ecg            (time, user_id, source, device_id, sample_rate smallint, samples int[])        -- µV
+acc            (time, user_id, source, device_id, sample_rate smallint, x smallint[], y smallint[], z smallint[])  -- milli-g
+device_battery (time, user_id, source, device_id, level smallint)                             -- %
+device_event   (time, user_id, source, device_id, event text)
+```
+
+Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat intervals), so the MCP tools see it.
+
+The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
+with row security). Chunks older than 8 days are compressed, after the phone's 7-day outbox can no longer resend into them;
+a late resend still works and still deduplicates. `vitals_app` has only `INSERT` on them, and the server takes `user_id`
+from the token. The reader keeps seeing only its own rows through the `vitals.*` views, which don't depend on RLS.
+Measured on 1.87 h of real strap data: ecg 6.0 MB → 1.9 MB, acc 18 MB → 7.7 MB, heart_rate 1.8 MB (not compressed),
+so about 6 MB per hour of wear, ~150 MB per day at 24/7. One row per sample compresses better (ecg 1.8 MB, acc 4.8 MB)
+but is ~10× larger until compressed; delta-encoding the arrays saved only 5–16 %. Neither is worth it.
 
 Each table also gets CHECK ranges for plausible values (for example `bpm BETWEEN 20 AND 250`).
 These catch typos and unit mix-ups (lb vs kg, °F vs °C) at the boundary.
@@ -137,17 +158,67 @@ This is enforced in the SQL itself, not only in tool validation: the RLS write p
 Importers connect as their own role and write to `vitals_data.*`. RLS denies a role that matches no policy, so give
 importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 
+## Ingest API
+
+`POST /api/v1/ingest` stores a batch of device frames. The phone keeps frames in a local outbox and deletes them only after a `200`.
+
+- **Auth:** OAuth like `/mcp`, but its own resource: `aud` must be `PUBLIC_URL` + `/api`, so an MCP token is rejected here
+  and vice versa. Metadata: `/.well-known/oauth-protected-resource/api`. `user_id` = `sub`, never taken from the body.
+  The app needs only the base URL: metadata → `authorization_servers` → the issuer's OIDC discovery. Authelia client:
+  ```yaml
+        - client_id: 'vitals-android'           # convention the app uses
+          public: true
+          token_endpoint_auth_method: 'none'
+          redirect_uris: ['com.stephanmeijer.vitals:/oauth/callback']   # must match the app's redirect scheme
+          scopes: ['openid', 'offline_access']
+          grant_types: ['authorization_code', 'refresh_token']
+          response_types: ['code']
+          require_pkce: true
+          pkce_challenge_method: 'S256'
+          audience: ['https://vitals.example.com/api']    # = PUBLIC_URL + /api
+          access_token_signed_response_alg: 'RS256'
+          consent_mode: 'pre-configured'
+          lifespan: 'vitals-device'   # define under identity_providers.oidc.lifespans.custom with a long refresh_token
+  ```
+- **Body:** `Content-Type: application/x-ndjson` (one frame per line, empty lines ignored) or `application/cbor-seq`
+  (RFC 8742). Optional `Content-Encoding: zstd` or `gzip`. Frames, tagged by `type`, times RFC 3339 (µs precision):
+  ```jsonl
+  {"type":"hr","device_id":"244E7234","time":"2026-11-04T10:00:00.123456Z","bpm":72,"rr_ms":[812,830]}
+  {"type":"ecg","device_id":"244E7234","time":"…","sample_rate":130,"samples":[-12,40]}
+  {"type":"acc","device_id":"244E7234","time":"…","sample_rate":200,"x":[1],"y":[2],"z":[-1000]}
+  {"type":"battery","device_id":"244E7234","time":"…","level":87}
+  {"type":"status","device_id":"244E7234","time":"…","event":"connected"}
+  ```
+  Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
+- **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
+
+| Response | Meaning |
+|---|---|
+| `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored |
+| `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid; nothing was stored |
+| `401` | Missing or bad token, with the RFC 9728 challenge |
+| `413` | Body over 32 MiB after decompression, or more than 5000 frames |
+| `415` | Unsupported `Content-Type` or `Content-Encoding` |
+| `500` | Database error; retry |
+
+Ingest writes as `vitals_app`. On `heart_rate` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'polar_h10'`
+rows for the signed user; the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
+The raw tables rely on the server instead (see Schema).
+
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
 `OIDC_ISSUER`, `PUBLIC_URL` (e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
-Endpoints: `/mcp` (stateless streamable HTTP), `/.well-known/oauth-protected-resource[/mcp]`, `/healthz`.
+Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`.
 
 ## Known limits
 
 - Two transactions that each insert the first `sleep_stage` rows of a new time range (each creating a TimescaleDB chunk)
   can deadlock (`40P01`): chunk creation copies the foreign key to `sleep_session` and locks it. Postgres aborts one of them;
   importers should retry on `40P01`. Rare in practice: a chunk spans 7 days.
+- The raw strap tables (`ecg`, `acc`, `device_battery`, `device_event`) have no RLS, so compression works. Isolation
+  there rests on the server setting `user_id` from the token; a server bug could write rows under another user.
+- One invalid frame rejects its whole batch (`400`). A client that drops a batch on `400` loses its valid frames too.
 - `pg_stat_activity` shows the *text* of other users' running `sql_query` calls (it's the same reader role), but not their data.
 - Not tested against a real Authelia token or the claude.ai connector flow; only a locally minted `at+jwt` was used.
