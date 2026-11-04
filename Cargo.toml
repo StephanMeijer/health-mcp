@@ -11,6 +11,7 @@ publish = false
 anyhow = "1.0.104"
 axum = "0.8"
 chrono = { version = "0.4.45", features = ["serde"] }
+ciborium = "0.2.2"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 rmcp = { version = "3.8", features = ["server", "transport-streamable-http-server", "macros"] }
@@ -19,6 +20,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "json", "migrate", "macros"] }
 tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["decompression-gzip", "decompression-zstd"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = { version = "1.29.0", features = ["serde", "v4"] }
@@ -28,3 +30,4 @@ strip = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+zstd = "0.14.3"
