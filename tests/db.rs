@@ -403,11 +403,9 @@ async fn sleep_round_trip() {
     let note = sql(&v, &a, "SELECT note FROM sleep_session").await.unwrap();
     assert_eq!(note["rows"], json!([{"note": "woke up twice"}]));
 
-    // A misspelled key fails to parse (rmcp's Parameters uses the same serde), so nothing is "updated".
+    // rmcp parses tool arguments with this same serde_json::from_value (-> invalid_params), so sleep_update never runs.
     let typo = serde_json::from_value::<SleepUpdate>(json!({"id": id, "notes": "x"}));
     assert!(typo.unwrap_err().to_string().contains("unknown field `notes`"));
-    let note = sql(&v, &a, "SELECT note FROM sleep_session").await.unwrap();
-    assert_eq!(note["rows"], json!([{"note": "woke up twice"}]));
 
     // Another user can neither change nor delete it.
     assert!(
