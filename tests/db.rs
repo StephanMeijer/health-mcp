@@ -649,17 +649,21 @@ async fn ingest_dedups_into_compressed_chunks() {
     let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
     assert_eq!(post(batch.clone()).await, (200, json!({"frames": 2, "inserted": 2})));
 
-    for t in ["ecg", "acc"] {
-        sqlx::query(
-            "SELECT compress_chunk(c, if_not_compressed => true)
-               FROM show_chunks($1::regclass, older_than => '2026-09-16'::timestamptz,
-                                newer_than => '2026-09-15'::timestamptz) c",
-        )
-        .bind(format!("vitals_data.{t}"))
-        .execute(&owner)
-        .await
-        .unwrap();
-    }
+    // The 8-day compression policy may compress the same chunk concurrently (it runs right after migrating a
+    // fresh DB); compress_chunk then raises 42710 despite if_not_compressed. The assertion below is the real check.
+    sqlx::query(
+        "DO $$ DECLARE c regclass; BEGIN
+           FOR c IN SELECT show_chunks(t, older_than => '2026-09-16'::timestamptz, newer_than => '2026-09-15'::timestamptz)
+                      FROM unnest('{vitals_data.ecg,vitals_data.acc}'::regclass[]) t LOOP
+             BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
+             EXCEPTION WHEN duplicate_object THEN NULL;
+             END;
+           END LOOP;
+         END $$",
+    )
+    .execute(&owner)
+    .await
+    .unwrap();
     let compressed: bool = sqlx::query_scalar(
         "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
           WHERE hypertable_schema = 'vitals_data' AND hypertable_name IN ('ecg', 'acc')
