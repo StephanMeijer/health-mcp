@@ -9,6 +9,11 @@ use vitals_mcp::auth::User;
 use vitals_mcp::db::Db;
 use vitals_mcp::tools::*;
 
+/// The first sleep_stage rows in a new time range create a TimescaleDB chunk, which copies the foreign key to
+/// sleep_session and locks it; two such transactions at once can deadlock (see SPEC.md, Known limits).
+/// Tests that write sleep stages run one at a time so a fresh database can't make them flaky.
+static SLEEP_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn url(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.into())
 }
@@ -320,6 +325,7 @@ async fn sql_query_cannot_escape_the_caller() {
 
 #[tokio::test]
 async fn sleep_and_summary() {
+    let _serial = SLEEP_WRITES.lock().await;
     let (v, _, _) = setup().await;
     let a = uid("alice");
     let start = chrono::Utc::now() - chrono::Duration::hours(10);
@@ -343,4 +349,132 @@ async fn sleep_and_summary() {
     assert_eq!(s["heart_rate"]["latest"]["bpm"], 58);
     assert_eq!(s["sleep"]["nights_30d"], 1);
     assert_eq!(s["sleep"]["stage_pct_30d"]["light"], 50.0);
+}
+
+fn session_id(msg: &str) -> String {
+    msg.rsplit(' ').next().unwrap().to_owned()
+}
+
+async fn stage_seconds(v: &Vitals, user: &str) -> Value {
+    let nights: Value = serde_json::from_str(
+        &v.sleep_list(
+            p(json!({"from": "2026-10-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"})),
+            as_user(user),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    nights[0]["stage_seconds"].clone()
+}
+
+#[tokio::test]
+async fn sleep_round_trip() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, _, _) = setup().await;
+    let (a, b) = (uid("alice"), uid("bob"));
+    let added = v
+        .sleep_add(
+            p(
+                json!({"start_at": "2026-10-05T23:00:00Z", "end_at": "2026-10-06T07:00:00Z", "stages": [
+                {"time": "2026-10-05T23:00:00Z", "stage": "light", "duration_s": 3600},
+                {"time": "2026-10-06T00:00:00Z", "stage": "deep", "duration_s": 1800}]}),
+            ),
+            as_user(&a),
+        )
+        .await
+        .unwrap();
+    let id = session_id(&added);
+
+    // `stages` replaces all of them.
+    v.sleep_update(
+        p(json!({"id": id, "stages": [{"time": "2026-10-06T01:00:00Z", "stage": "rem", "duration_s": 600}]})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stage_seconds(&v, &a).await, json!({"rem": 600}));
+
+    // Without `stages`, they are kept.
+    v.sleep_update(p(json!({"id": id, "note": "woke up twice"})), as_user(&a))
+        .await
+        .unwrap();
+    assert_eq!(stage_seconds(&v, &a).await, json!({"rem": 600}));
+    let note = sql(&v, &a, "SELECT note FROM sleep_session").await.unwrap();
+    assert_eq!(note["rows"], json!([{"note": "woke up twice"}]));
+
+    // Another user can neither change nor delete it.
+    assert!(
+        v.sleep_update(p(json!({"id": id, "note": "x"})), as_user(&b))
+            .await
+            .is_err()
+    );
+    assert!(v.sleep_delete(p(json!({ "id": id })), as_user(&b)).await.is_err());
+
+    // Delete cascades to the stages.
+    v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap();
+    let left = sql(
+        &v,
+        &a,
+        "SELECT (SELECT count(*) FROM sleep_session) AS s, (SELECT count(*) FROM sleep_stage) AS g",
+    )
+    .await
+    .unwrap();
+    assert_eq!(left["rows"], json!([{"s": 0, "g": 0}]));
+}
+
+#[tokio::test]
+async fn imported_sleep_is_read_only() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, db, owner) = setup().await;
+    let a = uid("alice");
+    // Importers bypass RLS; the owner (superuser in dev) stands in for one.
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "WITH s AS (INSERT INTO vitals_data.sleep_session (user_id, source, start_at, end_at)
+                    VALUES ($1, 'withings', '2026-10-07T23:00:00Z', '2026-10-08T07:00:00Z') RETURNING id)
+         INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
+         SELECT '2026-10-07T23:00:00Z', $1, id, 'deep', 1200 FROM s RETURNING session_id",
+    )
+    .bind(&a)
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+
+    let stages = json!({"id": id, "stages": [{"time": "2026-10-08T01:00:00Z", "stage": "rem", "duration_s": 60}]});
+    assert!(v.sleep_update(p(stages), as_user(&a)).await.is_err());
+    assert!(
+        v.sleep_update(p(json!({"id": id, "note": "x"})), as_user(&a))
+            .await
+            .is_err()
+    );
+    assert!(v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.is_err());
+
+    // The tools filter on source themselves; this is what RLS stops if they didn't.
+    let mut tx = db.app_tx(&a).await.unwrap();
+    let raw = sqlx::query("UPDATE vitals_data.sleep_session SET note = 'x' WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(raw.rows_affected(), 0);
+    let raw = sqlx::query("DELETE FROM vitals_data.sleep_stage WHERE session_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(raw.rows_affected(), 0);
+    let ins = sqlx::query(
+        "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
+         VALUES ('2026-10-08T01:00:00Z', $1, $2, 'rem', 60)",
+    )
+    .bind(&a)
+    .bind(id)
+    .execute(&mut *tx)
+    .await;
+    assert!(ins.unwrap_err().to_string().contains("row-level security"));
+    drop(tx);
+
+    assert_eq!(stage_seconds(&v, &a).await, json!({"deep": 1200}));
+    let row = sql(&v, &a, "SELECT source, note FROM sleep_session").await.unwrap();
+    assert_eq!(row["rows"], json!([{"source": "withings", "note": null}]));
 }
