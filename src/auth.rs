@@ -307,6 +307,73 @@ mod tests {
         assert_eq!(first.await.unwrap(), Ok("alice".into()));
     }
 
+    fn app() -> axum::Router {
+        use axum::routing::get;
+        let v = Arc::new(verifier());
+        axum::Router::new()
+            .route(
+                "/mcp",
+                get(|axum::Extension(User(sub)): axum::Extension<User>| async move { sub }),
+            )
+            .layer(axum::middleware::from_fn_with_state(v.clone(), require))
+            .route("/.well-known/oauth-protected-resource/mcp", get(metadata))
+            .with_state(v)
+    }
+
+    async fn call(path: &str, authorization: Option<String>) -> (StatusCode, Option<String>, String) {
+        use tower::ServiceExt;
+        let mut req = axum::http::Request::get(path);
+        if let Some(a) = authorization {
+            req = req.header(header::AUTHORIZATION, a);
+        }
+        let res = app()
+            .oneshot(req.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let challenge = res
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .map(|h| h.to_str().unwrap().to_owned());
+        let status = res.status();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        (status, challenge, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    const CHALLENGE: &str =
+        r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/mcp""#;
+
+    #[tokio::test]
+    async fn middleware_challenges_missing_and_bad_tokens() {
+        assert_eq!(
+            call("/mcp", None).await,
+            (StatusCode::UNAUTHORIZED, Some(CHALLENGE.into()), String::new())
+        );
+        let invalid = Some(format!(r#"{CHALLENGE}, error="invalid_token""#));
+        let id_token = format!("Bearer {}", token("JWT", claims(ISS, AUD, 300)));
+        assert_eq!(
+            call("/mcp", Some(id_token)).await,
+            (StatusCode::UNAUTHORIZED, invalid, String::new())
+        );
+        // Not a bearer token at all: challenge without an error, like a missing header.
+        let basic = call("/mcp", Some("Basic YWxpY2U6eA==".into())).await;
+        assert_eq!(basic, (StatusCode::UNAUTHORIZED, Some(CHALLENGE.into()), String::new()));
+    }
+
+    #[tokio::test]
+    async fn middleware_passes_the_subject_to_the_handler() {
+        let bearer = format!("Bearer {}", token("at+jwt", claims(ISS, AUD, 300)));
+        assert_eq!(call("/mcp", Some(bearer)).await, (StatusCode::OK, None, "alice".into()));
+    }
+
+    #[tokio::test]
+    async fn metadata_names_resource_and_issuer() {
+        let (status, _, body) = call("/.well-known/oauth-protected-resource/mcp", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let m: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(m["resource"], AUD);
+        assert_eq!(m["authorization_servers"], json!([ISS]));
+    }
+
     #[test]
     fn metadata_url_inserts_well_known() {
         assert_eq!(
