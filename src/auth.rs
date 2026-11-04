@@ -23,10 +23,10 @@ pub struct Verifier {
     resource: String,
     jwks_uri: String,
     http: reqwest::Client,
-    jwks: RwLock<JwkSet>,
+    jwks: Arc<RwLock<JwkSet>>,
     /// Last refresh attempt. Held across the fetch so concurrent unknown-kid callers wait for it,
     /// while `jwks` is only write-locked for the swap, so valid tokens never block.
-    last_fetch: Mutex<Instant>,
+    last_fetch: Arc<Mutex<Instant>>,
 }
 
 #[derive(Deserialize)]
@@ -56,8 +56,8 @@ impl Verifier {
             resource: resource.to_owned(),
             jwks_uri,
             http,
-            jwks: RwLock::new(jwks),
-            last_fetch: Mutex::new(Instant::now()),
+            jwks: Arc::new(RwLock::new(jwks)),
+            last_fetch: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -94,26 +94,22 @@ impl Verifier {
 
     /// Picks up key rotation; rate-limited so random kids can't hammer the IdP.
     /// Callers queue behind an in-flight fetch (bounded by `IDP_TIMEOUT`) and then see its result.
+    /// The fetch runs in its own task holding the lock, so a caller that disconnects can't cancel it.
     async fn refresh(&self) {
-        let mut last = self.last_fetch.lock().await;
+        let mut last = self.last_fetch.clone().lock_owned().await;
         if last.elapsed() < JWKS_MIN_REFRESH {
             return;
         }
         *last = Instant::now();
-        match self.fetch_jwks().await {
-            Ok(set) => *self.jwks.write().await = set,
-            Err(e) => tracing::warn!("JWKS refresh failed: {e}"),
-        }
-    }
-
-    async fn fetch_jwks(&self) -> reqwest::Result<JwkSet> {
-        self.http
-            .get(&self.jwks_uri)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await
+        let (http, uri, jwks) = (self.http.clone(), self.jwks_uri.clone(), self.jwks.clone());
+        let _ = tokio::spawn(async move {
+            let _last = last;
+            match fetch_jwks(&http, &uri).await {
+                Ok(set) => *jwks.write().await = set,
+                Err(e) => tracing::warn!("JWKS refresh failed: {e}"),
+            }
+        })
+        .await;
     }
 
     fn metadata_url(&self) -> String {
@@ -125,6 +121,10 @@ impl Verifier {
             url.path()
         )
     }
+}
+
+async fn fetch_jwks(http: &reqwest::Client, uri: &str) -> reqwest::Result<JwkSet> {
+    http.get(uri).send().await?.error_for_status()?.json().await
 }
 
 /// Axum middleware for `/mcp`: 401 with RFC 9728 discovery, or inserts [`User`].
@@ -244,7 +244,7 @@ mod tests {
             .timeout(Duration::from_secs(1))
             .build()
             .unwrap();
-        *v.last_fetch.get_mut() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
+        *v.last_fetch.try_lock().unwrap() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
         let v = Arc::new(v);
 
         let mut unknown_kid = Header::new(jsonwebtoken::Algorithm::HS256);
@@ -269,10 +269,9 @@ mod tests {
         assert!(unknown.expect("refresh never gave up").unwrap().is_err());
     }
 
-    #[tokio::test]
-    async fn caller_arriving_mid_refresh_gets_rotated_key() {
-        // A slow IdP that serves a JWKS holding the rotated key.
-        let mut rotated = verifier().jwks.into_inner().keys.remove(0);
+    /// A verifier whose IdP takes 300 ms to serve a JWKS holding the `rotated` key, plus a token for that key.
+    async fn slow_idp_with_rotated_key() -> (Arc<Verifier>, String) {
+        let mut rotated = verifier().jwks.try_read().unwrap().keys[0].clone();
         rotated.common.key_id = Some("rotated".into());
         let body = serde_json::to_string(&JwkSet { keys: vec![rotated] }).unwrap();
         let idp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -294,13 +293,18 @@ mod tests {
         });
         let mut v = verifier();
         v.jwks_uri = jwks_uri;
-        *v.last_fetch.get_mut() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
-        let v = Arc::new(v);
+        *v.last_fetch.try_lock().unwrap() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
 
         let mut h = Header::new(jsonwebtoken::Algorithm::HS256);
         h.typ = Some("at+jwt".into());
         h.kid = Some("rotated".into());
         let t = encode(&h, &claims(ISS, AUD, 300), &EncodingKey::from_secret(SECRET.as_bytes())).unwrap();
+        (Arc::new(v), t)
+    }
+
+    #[tokio::test]
+    async fn caller_arriving_mid_refresh_gets_rotated_key() {
+        let (v, t) = slow_idp_with_rotated_key().await;
         let first = tokio::spawn({
             let (v, t) = (v.clone(), t.clone());
             async move { v.verify(&t).await }
@@ -308,6 +312,19 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await; // first caller is mid-fetch
         assert_eq!(v.verify(&t).await, Ok("alice".into()));
         assert_eq!(first.await.unwrap(), Ok("alice".into()));
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_still_installs_rotated_key() {
+        let (v, t) = slow_idp_with_rotated_key().await;
+        let first = tokio::spawn({
+            let (v, t) = (v.clone(), t.clone());
+            async move { v.verify(&t).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await; // first caller is mid-fetch
+        first.abort(); // its client disconnected
+        let next = tokio::time::timeout(Duration::from_secs(2), v.verify(&t)).await;
+        assert_eq!(next.expect("refresh never finished"), Ok("alice".into()));
     }
 
     fn app() -> axum::Router {
