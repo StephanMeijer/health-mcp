@@ -6,6 +6,7 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
 use sqlx::postgres::PgPoolOptions;
+use tokio::signal::unix::{SignalKind, signal};
 use vitals_mcp::{auth, db::Db, tools::Vitals};
 
 fn env(key: &str) -> anyhow::Result<String> {
@@ -66,10 +67,16 @@ async fn main() -> anyhow::Result<()> {
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("listening on {bind}, resource {resource}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-        })
-        .await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
     Ok(())
+}
+
+/// Kubernetes and Docker stop containers with SIGTERM; PID 1 ignores it unless handled.
+async fn shutdown() {
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
+    tracing::info!("shutting down");
 }
