@@ -90,6 +90,8 @@ device_event   (time, user_id, source, device_id, event text)
 ```
 
 Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat intervals), so the MCP tools see it.
+`heart_rate` has no `device_id`: an `hr` frame's `device_id` is required for uniformity but not stored, and duplicates
+match on `(user_id, source, time)`, so two straps of one user at the same instant collapse into one row.
 
 The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
 with row security). Chunks older than 8 days are compressed, after the phone's 7-day outbox can no longer resend into them;
@@ -190,6 +192,7 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
   {"type":"status","device_id":"244E7234","time":"…","event":"connected"}
   ```
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
+  `hr` frames require `device_id` but don't store it (see Schema).
 - **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
 
 | Response | Meaning |
