@@ -596,6 +596,13 @@ async fn ingest_rejects_unsupported_requests() {
     );
     let huge = vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1];
     assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, huge).await.0, 413);
+    // The cap applies after decompression: a small zstd body that inflates past it is refused too.
+    let bomb = zstd::encode_all(&vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1][..], 19).unwrap();
+    assert!(bomb.len() < 1 << 20);
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), bomb).await.0,
+        413
+    );
     // Empty heartbeat batches are fine.
     assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, vec![]).await.0, 200);
 }
@@ -622,4 +629,51 @@ async fn app_role_cannot_write_other_sources_or_users() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("permission denied"), "{err}");
+}
+
+#[tokio::test]
+async fn ingest_dedups_into_compressed_chunks() {
+    let (_, db, owner) = setup().await;
+    let a = uid("alice");
+    // A day no other test writes to, so compressing its chunks can't disturb them.
+    let frame = |kind: &str, sec: u32| {
+        let t = format!("2026-09-15T08:00:{sec:02}Z");
+        match kind {
+            "ecg" => json!({"type": "ecg", "device_id": "d", "time": t, "sample_rate": 130, "samples": [1, 2]}),
+            _ => json!({"type": "acc", "device_id": "d", "time": t, "sample_rate": 200, "x": [1], "y": [2], "z": [3]}),
+        }
+        .to_string()
+            + "\n"
+    };
+    let batch = frame("ecg", 0) + &frame("acc", 0);
+    let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
+    assert_eq!(post(batch.clone()).await, (200, json!({"frames": 2, "inserted": 2})));
+
+    for t in ["ecg", "acc"] {
+        sqlx::query(
+            "SELECT compress_chunk(c, if_not_compressed => true)
+               FROM show_chunks($1::regclass, older_than => '2026-09-16'::timestamptz,
+                                newer_than => '2026-09-15'::timestamptz) c",
+        )
+        .bind(format!("vitals_data.{t}"))
+        .execute(&owner)
+        .await
+        .unwrap();
+    }
+    let compressed: bool = sqlx::query_scalar(
+        "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
+          WHERE hypertable_schema = 'vitals_data' AND hypertable_name IN ('ecg', 'acc')
+            AND range_start = '2026-09-15'",
+    )
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+    assert!(compressed);
+
+    // The app role retries into the compressed chunks: duplicates are still skipped, new frames still land.
+    assert_eq!(post(batch).await, (200, json!({"frames": 2, "inserted": 0})));
+    assert_eq!(
+        post(frame("ecg", 0) + &frame("ecg", 1)).await,
+        (200, json!({"frames": 2, "inserted": 1}))
+    );
 }
