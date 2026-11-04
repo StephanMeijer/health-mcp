@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// The authenticated caller: the token's `sub`.
 #[derive(Clone, Debug)]
@@ -23,7 +23,10 @@ pub struct Verifier {
     resource: String,
     jwks_uri: String,
     http: reqwest::Client,
-    jwks: RwLock<(JwkSet, Instant)>,
+    jwks: RwLock<JwkSet>,
+    /// Last refresh attempt. Held across the fetch so concurrent unknown-kid callers wait for it,
+    /// while `jwks` is only write-locked for the swap, so valid tokens never block.
+    last_fetch: Mutex<Instant>,
 }
 
 #[derive(Deserialize)]
@@ -32,10 +35,11 @@ struct Claims {
 }
 
 const JWKS_MIN_REFRESH: Duration = Duration::from_secs(60);
+const IDP_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Verifier {
     pub async fn discover(issuer: &str, resource: &str) -> anyhow::Result<Self> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder().timeout(IDP_TIMEOUT).build()?;
         #[derive(Deserialize)]
         struct Discovery {
             jwks_uri: String,
@@ -52,7 +56,8 @@ impl Verifier {
             resource: resource.to_owned(),
             jwks_uri,
             http,
-            jwks: RwLock::new((jwks, Instant::now())),
+            jwks: RwLock::new(jwks),
+            last_fetch: Mutex::new(Instant::now()),
         }
     }
 
@@ -84,18 +89,19 @@ impl Verifier {
 
     async fn key(&self, kid: &str) -> Option<DecodingKey> {
         let jwks = self.jwks.read().await;
-        jwks.0.find(kid).and_then(|j| DecodingKey::from_jwk(j).ok())
+        jwks.find(kid).and_then(|j| DecodingKey::from_jwk(j).ok())
     }
 
     /// Picks up key rotation; rate-limited so random kids can't hammer the IdP.
+    /// Callers queue behind an in-flight fetch (bounded by `IDP_TIMEOUT`) and then see its result.
     async fn refresh(&self) {
-        let mut jwks = self.jwks.write().await;
-        if jwks.1.elapsed() < JWKS_MIN_REFRESH {
+        let mut last = self.last_fetch.lock().await;
+        if last.elapsed() < JWKS_MIN_REFRESH {
             return;
         }
-        jwks.1 = Instant::now();
+        *last = Instant::now();
         match self.fetch_jwks().await {
-            Ok(set) => jwks.0 = set,
+            Ok(set) => *self.jwks.write().await = set,
             Err(e) => tracing::warn!("JWKS refresh failed: {e}"),
         }
     }
@@ -216,6 +222,89 @@ mod tests {
         ] {
             assert!(v.verify(&t).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn hung_idp_does_not_block_valid_tokens() {
+        // An IdP that accepts connections and never answers.
+        let idp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let jwks_uri = format!("http://{}/jwks", idp.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((s, _)) = idp.accept().await {
+                held.push(s);
+            }
+        });
+        let mut v = verifier();
+        v.jwks_uri = jwks_uri;
+        v.http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        *v.last_fetch.get_mut() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
+        let v = Arc::new(v);
+
+        let mut unknown_kid = Header::new(jsonwebtoken::Algorithm::HS256);
+        unknown_kid.typ = Some("at+jwt".into());
+        unknown_kid.kid = Some("rotated".into());
+        let unknown = encode(
+            &unknown_kid,
+            &claims(ISS, AUD, 300),
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap();
+        let refreshing = tokio::spawn({
+            let v = v.clone();
+            async move { v.verify(&unknown).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await; // let the refresh start
+
+        let valid = token("at+jwt", claims(ISS, AUD, 300));
+        let valid = tokio::time::timeout(Duration::from_millis(200), v.verify(&valid)).await;
+        assert_eq!(valid.expect("valid token blocked by JWKS refresh"), Ok("alice".into()));
+        let unknown = tokio::time::timeout(Duration::from_secs(3), refreshing).await;
+        assert!(unknown.expect("refresh never gave up").unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn caller_arriving_mid_refresh_gets_rotated_key() {
+        // A slow IdP that serves a JWKS holding the rotated key.
+        let mut rotated = verifier().jwks.into_inner().keys.remove(0);
+        rotated.common.key_id = Some("rotated".into());
+        let body = serde_json::to_string(&JwkSet { keys: vec![rotated] }).unwrap();
+        let idp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let jwks_uri = format!("http://{}/jwks", idp.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut s, _)) = idp.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let _ = s.read(&mut [0; 4096]).await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let mut v = verifier();
+        v.jwks_uri = jwks_uri;
+        *v.last_fetch.get_mut() = Instant::now() - JWKS_MIN_REFRESH - Duration::from_secs(1);
+        let v = Arc::new(v);
+
+        let mut h = Header::new(jsonwebtoken::Algorithm::HS256);
+        h.typ = Some("at+jwt".into());
+        h.kid = Some("rotated".into());
+        let t = encode(&h, &claims(ISS, AUD, 300), &EncodingKey::from_secret(SECRET.as_bytes())).unwrap();
+        let first = tokio::spawn({
+            let (v, t) = (v.clone(), t.clone());
+            async move { v.verify(&t).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await; // first caller is mid-fetch
+        assert_eq!(v.verify(&t).await, Ok("alice".into()));
+        assert_eq!(first.await.unwrap(), Ok("alice".into()));
     }
 
     #[test]
