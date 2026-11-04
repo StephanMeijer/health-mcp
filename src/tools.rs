@@ -111,12 +111,14 @@ pub struct Reading {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadingAdd {
     pub kind: Kind,
     pub readings: Vec<Reading>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadingUpdate {
     pub kind: Kind,
     /// Exact time of the manual reading to change.
@@ -126,6 +128,7 @@ pub struct ReadingUpdate {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadingDelete {
     pub kind: Kind,
     /// Exact times of manual readings to delete.
@@ -137,6 +140,7 @@ pub struct ReadingDelete {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadingList {
     pub kind: Kind,
     /// Default: 30 days before `to`.
@@ -153,6 +157,7 @@ pub struct ReadingList {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadingAggregate {
     pub kind: Kind,
     /// Field to aggregate, e.g. "bpm", "systolic", "weight_kg".
@@ -176,6 +181,7 @@ pub enum Stage {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SleepStage {
     /// Start of this stage segment.
     pub time: DateTime<Utc>,
@@ -184,6 +190,7 @@ pub struct SleepStage {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SleepAdd {
     pub start_at: DateTime<Utc>,
     pub end_at: DateTime<Utc>,
@@ -193,6 +200,7 @@ pub struct SleepAdd {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SleepUpdate {
     /// Id of a manual sleep session.
     pub id: Uuid,
@@ -204,12 +212,14 @@ pub struct SleepUpdate {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SleepDelete {
     /// Id of a manual sleep session.
     pub id: Uuid,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SleepList {
     /// Sessions starting in [from, to). Default: last 30 days.
     pub from: Option<DateTime<Utc>>,
@@ -220,6 +230,7 @@ pub struct SleepList {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SqlQuery {
     /// One read-only SELECT (or WITH … SELECT) over the views listed by schema_describe.
     pub sql: String,
