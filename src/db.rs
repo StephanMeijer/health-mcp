@@ -1,6 +1,25 @@
+use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 
 pub type Tx = Transaction<'static, Postgres>;
+
+/// Reader pool options with a release hook that scrubs the session state a `sql_query` caller can leave behind.
+/// A read-only `SELECT` can still take a session-level advisory lock or set a session GUC, and neither is cleared
+/// by the transaction `ROLLBACK` sql_query issues, so without this a lock could ride a pooled connection into the
+/// next caller — or wedge the startup migration's own advisory lock. `pg_advisory_unlock_all()` + `RESET ALL`
+/// clear both without deallocating prepared statements (`DISCARD ALL` would, breaking sqlx's statement cache).
+/// The app pool needs none of this: it only runs server-authored SQL.
+pub fn reader_pool_options() -> PgPoolOptions {
+    PgPoolOptions::new().after_release(|conn, _meta| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_unlock_all()")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("RESET ALL").execute(&mut *conn).await?;
+            Ok(true)
+        })
+    })
+}
 
 #[derive(Clone)]
 pub struct Db {

@@ -30,12 +30,13 @@ async fn setup() -> (Vitals, Db, PgPool) {
         app: PgPool::connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/vitals"))
             .await
             .unwrap(),
-        reader: PgPool::connect(&url(
-            "TEST_READER_URL",
-            "postgres://vitals_reader:reader@localhost:55432/vitals",
-        ))
-        .await
-        .unwrap(),
+        reader: vitals_mcp::db::reader_pool_options()
+            .connect(&url(
+                "TEST_READER_URL",
+                "postgres://vitals_reader:reader@localhost:55432/vitals",
+            ))
+            .await
+            .unwrap(),
     };
     (Vitals::new(db.clone()), db, owner)
 }
@@ -322,6 +323,30 @@ async fn sql_query_cannot_escape_the_caller() {
         .unwrap();
     let forged_sig = sqlx::query("SELECT * FROM vitals.heart_rate").fetch_all(&mut *tx).await;
     assert!(forged_sig.unwrap_err().to_string().contains("no authenticated user"));
+}
+
+#[tokio::test]
+async fn sql_query_does_not_leak_session_state() {
+    // A one-connection reader pool forces the same connection to be reused, so a session advisory lock
+    // that survived `sql_query`'s rollback would still be held on the next call. The release hook scrubs it.
+    let (_, db0, _) = setup().await;
+    let reader = vitals_mcp::db::reader_pool_options()
+        .max_connections(1)
+        .connect(&url(
+            "TEST_READER_URL",
+            "postgres://vitals_reader:reader@localhost:55432/vitals",
+        ))
+        .await
+        .unwrap();
+    let v = Vitals::new(Db {
+        app: db0.app.clone(),
+        reader,
+    });
+    let u = uid("lock");
+    sql(&v, &u, "SELECT pg_advisory_lock(42) AS x").await.unwrap();
+    // Same pooled connection; the lock must have been released on return, so this session no longer holds it.
+    let r = sql(&v, &u, "SELECT pg_advisory_unlock(42) AS released").await.unwrap();
+    assert_eq!(r["rows"][0]["released"], json!(false));
 }
 
 #[tokio::test]

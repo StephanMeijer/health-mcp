@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
             .connect(&env("DATABASE_URL")?)
             .await
             .context("DATABASE_URL")?,
-        reader: PgPoolOptions::new()
+        reader: vitals_mcp::db::reader_pool_options()
             .connect(&env("DATABASE_READER_URL")?)
             .await
             .context("DATABASE_READER_URL")?,
