@@ -79,8 +79,8 @@ blood_pressure (time, user_id, source, systolic smallint NOT NULL, diastolic sma
 body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note text,
                 CHECK (num_nonnulls(weight_kg, fat_pct, spo2_pct, temp_c) > 0))
 
-sleep_session  (id uuid PK, user_id, source, start_at, end_at, note text,
-                UNIQUE (user_id, source, start_at), CHECK (end_at > start_at))   -- plain table
+sleep_session  (id uuid PK, user_id, source, start_at, end_at, note text, device_id int → devices,
+                UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, start_at), CHECK (end_at > start_at))   -- plain table
 sleep_stage    (time, user_id, session_id → sleep_session ON DELETE CASCADE,
                 stage text CHECK (stage IN ('awake','light','deep','rem')), duration_s int NOT NULL)  -- hypertable
 ```
@@ -98,7 +98,15 @@ ecg            (time, user_id, source, sample_rate smallint, samples int[], devi
 acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g
 device_battery (time, user_id, source, level smallint, device_id)                             -- %
 device_event   (time, user_id, source, event text, device_id)
+skin_temp      (time, user_id, source, sample_rate smallint, celsius real[], device_id)   -- °C, CHECK 0 < c < 50
+recharge       (night date, user_id, source, device_id, status smallint 1..6, ans_charge real -10..10,
+                hrv_ms real, breathing_rate real, hr_bpm smallint,      -- plain table, one row per night
+                UNIQUE (user_id, source, device_id, night))
 ```
+
+`skin_temp` and `recharge` come from the Polar Loop. They are raw tables like the ones above, but neither is compressed: skin temperature is ~350 KB per day at 1 Hz.
+App sleep goes into `sleep_session`/`sleep_stage` with `source = 'app'` and the session's `device_id`, so `sleep_list` and
+`summary` include it; the write tools still only touch manual sessions.
 
 Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat intervals), so the MCP tools see it.
 `heart_rate.device_id` is set for app rows and NULL for manual and imported ones, so two trackers of one user at the
@@ -203,7 +211,12 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
   {"type":"acc","device_id":1,"time":"…","sample_rate":200,"x":[1],"y":[2],"z":[-1000]}
   {"type":"battery","device_id":1,"time":"…","level":87}
   {"type":"status","device_id":1,"time":"…","event":"connected"}
+  {"type":"skin_temp","device_id":2,"time":"…","sample_rate":1,"celsius":[33.25,33.5]}
+  {"type":"sleep","device_id":2,"start_at":"…","end_at":"…","stages":[{"time":"…","stage":"light","duration_s":600}]}
+  {"type":"recharge","device_id":2,"night":"2026-11-04","status":4,"ans_charge":2.5,"hrv_ms":48,"breathing_rate":14.5,"hr_bpm":52}
   ```
+  `sleep` stages are `awake`/`light`/`deep`/`rem`. A re-sent night with the same `start_at` is a no-op, including its stages.
+  `recharge`'s last three fields are optional.
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
   `device_id` is the id from `POST /api/v1/devices`; a frame with an id that isn't one of the user's devices is a `400`.
 - **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
@@ -217,8 +230,8 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
 | `500` | Database error; retry |
 
-Ingest writes as `vitals_app`. On `heart_rate` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'app'`
-rows for the signed user and one of their devices; the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
+Ingest writes as `vitals_app`. On `heart_rate` and `sleep_session` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'app'`
+rows for the signed user and one of their devices (on `sleep_stage`: only into an app session); the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
 The raw tables rely on the server instead (see Schema): it checks every frame's `device_id` against the user's devices.
 
 ### Devices
@@ -244,8 +257,10 @@ Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/o
 - Two transactions that each insert the first `sleep_stage` rows of a new time range (each creating a TimescaleDB chunk)
   can deadlock (`40P01`): chunk creation copies the foreign key to `sleep_session` and locks it. Postgres aborts one of them;
   importers should retry on `40P01`. Rare in practice: a chunk spans 7 days.
-- The raw strap tables (`ecg`, `acc`, `device_battery`, `device_event`) have no RLS, so compression works. Isolation
+- The raw tables (`ecg`, `acc`, `device_battery`, `device_event`, `skin_temp`, `recharge`) have no RLS, so compression works. Isolation
   there rests on the server setting `user_id` from the token; a server bug could write rows under another user.
 - One invalid frame rejects its whole batch (`400`). A client that drops a batch on `400` loses its valid frames too.
+  An unknown frame `type` is invalid too, so deploy a server that knows a new type before an app that sends it.
+- App sleep deduplicates on `start_at`: if the tracker later reports a night with a different start, it's a second session.
 - `pg_stat_activity` shows the *text* of other users' running `sql_query` calls (it's the same reader role), but not their data.
 - Not tested against a real Authelia token or the claude.ai connector flow; only a locally minted `at+jwt` was used.

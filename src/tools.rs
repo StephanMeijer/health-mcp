@@ -171,7 +171,7 @@ pub struct ReadingAggregate {
     pub source: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Awake,
@@ -180,7 +180,7 @@ pub enum Stage {
     Rem,
 }
 
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SleepStage {
     /// Start of this stage segment.
@@ -664,7 +664,7 @@ heart_rate     (time, user_id, source, bpm smallint, note, rr_ms smallint[], dev
 hrv            (time, user_id, source, rmssd_ms real, note)            -- RMSSD in ms
 blood_pressure (time, user_id, source, systolic smallint, diastolic smallint, pulse smallint, note)  -- mmHg, bpm
 body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note)  -- any subset non-null
-sleep_session  (id uuid, user_id, source, start_at, end_at, note)
+sleep_session  (id uuid, user_id, source, start_at, end_at, note, device_id)
 sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'light'|'deep'|'rem', duration_s int)
 
 devices        (id int, user_id, model, serial, created_at)  -- e.g. model 'Polar H10', serial '244E7234'
@@ -674,6 +674,10 @@ ecg            (time, user_id, source, sample_rate smallint, samples int[], devi
 acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g, 1000 ≈ 1 g, 200 Hz
 device_battery (time, user_id, source, level smallint, device_id)  -- %
 device_event   (time, user_id, source, event text, device_id)      -- e.g. connected, disconnected
+skin_temp      (time, user_id, source, sample_rate smallint, celsius real[], device_id)  -- wrist skin °C, 1 Hz
+recharge       (night date, user_id, source, device_id, status smallint, ans_charge real, hrv_ms real, breathing_rate real, hr_bpm smallint)
+               -- Polar Nightly Recharge: status 1 very poor … 6 very good, ans_charge -10..+10 (autonomic recovery vs your baseline),
+               -- hrv_ms/breathing_rate/hr_bpm are overnight averages (breaths per minute for breathing_rate)
 ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with time_bucket, never return raw arrays for long periods.
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
@@ -691,7 +695,12 @@ SELECT s.start_at::date AS night, sum(g.duration_s) / 60 AS deep_min FROM sleep_
 JOIN sleep_stage g ON g.session_id = s.id AND g.stage = 'deep' GROUP BY 1 ORDER BY 1;
 -- HRV vs previous night's sleep duration
 SELECT h.time::date, h.rmssd_ms, extract(epoch FROM s.end_at - s.start_at) / 3600 AS sleep_h
-FROM hrv h JOIN sleep_session s ON s.end_at::date = h.time::date;"#;
+FROM hrv h JOIN sleep_session s ON s.end_at::date = h.time::date;
+-- nightly skin temperature (02:00-06:00 local) vs the previous 30 nights
+WITH n AS (SELECT (t.time AT TIME ZONE 'Europe/Amsterdam')::date AS night, avg(c) AS c FROM skin_temp t, unnest(t.celsius) c
+  WHERE extract(hour FROM t.time AT TIME ZONE 'Europe/Amsterdam') BETWEEN 2 AND 5 GROUP BY 1)
+SELECT night, round(c::numeric, 2), round((c - avg(c) OVER (ORDER BY night ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING))::numeric, 2) AS delta
+FROM n ORDER BY night;"#;
 
 #[tool_handler]
 impl ServerHandler for Vitals {

@@ -7,13 +7,14 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::auth::User;
 use crate::db::Db;
+use crate::tools::SleepStage;
 
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
@@ -53,6 +54,30 @@ pub enum Frame {
         time: DateTime<Utc>,
         event: String,
     },
+    #[serde(rename = "skin_temp")]
+    SkinTemp {
+        device_id: i32,
+        time: DateTime<Utc>,
+        sample_rate: i16,
+        celsius: Vec<f32>,
+    },
+    Sleep {
+        device_id: i32,
+        start_at: DateTime<Utc>,
+        end_at: DateTime<Utc>,
+        #[serde(default)]
+        stages: Vec<SleepStage>,
+    },
+    /// Polar Nightly Recharge, one per night.
+    Recharge {
+        device_id: i32,
+        night: NaiveDate,
+        status: i16,
+        ans_charge: f32,
+        hrv_ms: Option<f32>,
+        breathing_rate: Option<f32>,
+        hr_bpm: Option<i16>,
+    },
 }
 
 impl Frame {
@@ -69,6 +94,38 @@ impl Frame {
             ),
             Frame::Battery { level, .. } => ((0..=100).contains(level), "level must be 0..=100"),
             Frame::Status { event, .. } => (!event.is_empty(), "event must not be empty"),
+            Frame::SkinTemp {
+                sample_rate, celsius, ..
+            } => (
+                *sample_rate > 0 && celsius.iter().all(|c| *c > 0.0 && *c < 50.0),
+                "sample_rate must be > 0 and celsius within 0..50",
+            ),
+            Frame::Sleep {
+                start_at,
+                end_at,
+                stages,
+                ..
+            } => (
+                end_at > start_at
+                    && *end_at - *start_at <= TimeDelta::hours(24)
+                    && stages.iter().all(|g| g.duration_s > 0),
+                "end_at must be after start_at and at most 24 h later, stage duration_s > 0",
+            ),
+            Frame::Recharge {
+                status,
+                ans_charge,
+                hrv_ms,
+                breathing_rate,
+                hr_bpm,
+                ..
+            } => (
+                (1..=6).contains(status)
+                    && (-10.0..=10.0).contains(ans_charge)
+                    && hrv_ms.is_none_or(|v| v > 0.0)
+                    && breathing_rate.is_none_or(|v| v > 0.0)
+                    && hr_bpm.is_none_or(|v| (20..=250).contains(&v)),
+                "status must be 1..=6, ans_charge -10..=10, hrv_ms and breathing_rate > 0, hr_bpm 20..=250",
+            ),
         };
         if ok { Ok(()) } else { Err(why) }
     }
@@ -79,7 +136,10 @@ impl Frame {
             | Frame::Ecg { device_id, .. }
             | Frame::Acc { device_id, .. }
             | Frame::Battery { device_id, .. }
-            | Frame::Status { device_id, .. } => *device_id,
+            | Frame::Status { device_id, .. }
+            | Frame::SkinTemp { device_id, .. }
+            | Frame::Sleep { device_id, .. }
+            | Frame::Recharge { device_id, .. } => *device_id,
         }
     }
 
@@ -90,6 +150,9 @@ impl Frame {
             Frame::Acc { .. } => "acc",
             Frame::Battery { .. } => "battery",
             Frame::Status { .. } => "status",
+            Frame::SkinTemp { .. } => "skin_temp",
+            Frame::Sleep { .. } => "sleep",
+            Frame::Recharge { .. } => "recharge",
         }
     }
 }
@@ -132,42 +195,88 @@ pub fn decode(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError
     Ok(frames)
 }
 
-/// Per frame kind: one set-based insert. `jsonb_to_recordset` turns JSON arrays into Postgres arrays.
-const INSERTS: [(&str, &str); 5] = [
+/// Per frame kind: set-based inserts; only the first statement's rows count as inserted frames.
+/// `jsonb_to_recordset` turns JSON arrays into Postgres arrays.
+const INSERTS: [(&str, &[&str]); 8] = [
     (
         "hr",
-        "INSERT INTO vitals_data.heart_rate (time, user_id, source, device_id, bpm, rr_ms)
+        &[
+            "INSERT INTO vitals_data.heart_rate (time, user_id, source, device_id, bpm, rr_ms)
             SELECT time, $2, 'app', device_id, bpm, nullif(rr_ms, '{}') FROM jsonb_to_recordset($1)
               AS f(time timestamptz, device_id int, bpm smallint, rr_ms smallint[])
             ON CONFLICT DO NOTHING",
+        ],
     ),
     (
         "ecg",
-        "INSERT INTO vitals_data.ecg (time, user_id, source, device_id, sample_rate, samples)
+        &[
+            "INSERT INTO vitals_data.ecg (time, user_id, source, device_id, sample_rate, samples)
              SELECT time, $2, 'app', device_id, sample_rate, samples FROM jsonb_to_recordset($1)
                AS f(time timestamptz, device_id int, sample_rate smallint, samples int[])
              ON CONFLICT DO NOTHING",
+        ],
     ),
     (
         "acc",
-        "INSERT INTO vitals_data.acc (time, user_id, source, device_id, sample_rate, x, y, z)
+        &[
+            "INSERT INTO vitals_data.acc (time, user_id, source, device_id, sample_rate, x, y, z)
              SELECT time, $2, 'app', device_id, sample_rate, x, y, z FROM jsonb_to_recordset($1)
                AS f(time timestamptz, device_id int, sample_rate smallint, x smallint[], y smallint[], z smallint[])
              ON CONFLICT DO NOTHING",
+        ],
     ),
     (
         "battery",
-        "INSERT INTO vitals_data.device_battery (time, user_id, source, device_id, level)
+        &[
+            "INSERT INTO vitals_data.device_battery (time, user_id, source, device_id, level)
                  SELECT time, $2, 'app', device_id, level FROM jsonb_to_recordset($1)
                    AS f(time timestamptz, device_id int, level smallint)
                  ON CONFLICT DO NOTHING",
+        ],
     ),
     (
         "status",
-        "INSERT INTO vitals_data.device_event (time, user_id, source, device_id, event)
+        &[
+            "INSERT INTO vitals_data.device_event (time, user_id, source, device_id, event)
                 SELECT time, $2, 'app', device_id, event FROM jsonb_to_recordset($1)
                   AS f(time timestamptz, device_id int, event text)
                 ON CONFLICT DO NOTHING",
+        ],
+    ),
+    (
+        "skin_temp",
+        &[
+            "INSERT INTO vitals_data.skin_temp (time, user_id, source, device_id, sample_rate, celsius)
+             SELECT time, $2, 'app', device_id, sample_rate, celsius FROM jsonb_to_recordset($1)
+               AS f(time timestamptz, device_id int, sample_rate smallint, celsius real[])
+             ON CONFLICT DO NOTHING",
+        ],
+    ),
+    (
+        "recharge",
+        &["INSERT INTO vitals_data.recharge
+               (night, user_id, source, device_id, status, ans_charge, hrv_ms, breathing_rate, hr_bpm)
+             SELECT night, $2, 'app', device_id, status, ans_charge, hrv_ms, breathing_rate, hr_bpm
+               FROM jsonb_to_recordset($1) AS f(night date, device_id int, status smallint, ans_charge real,
+                                                hrv_ms real, breathing_rate real, hr_bpm smallint)
+             ON CONFLICT DO NOTHING"],
+    ),
+    (
+        "sleep",
+        &[
+            "INSERT INTO vitals_data.sleep_session (user_id, source, device_id, start_at, end_at)
+               SELECT $2, 'app', device_id, start_at, end_at FROM jsonb_to_recordset($1)
+                 AS f(device_id int, start_at timestamptz, end_at timestamptz)
+               ON CONFLICT DO NOTHING",
+            // Joins on the natural key, so a re-sent night adds no stages to its stored session.
+            "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
+               SELECT g.time, $2, s.id, g.stage, g.duration_s
+               FROM jsonb_to_recordset($1) AS f(device_id int, start_at timestamptz, stages jsonb)
+               JOIN vitals_data.sleep_session s
+                 ON s.user_id = $2 AND s.source = 'app' AND s.device_id = f.device_id AND s.start_at = f.start_at
+               CROSS JOIN LATERAL jsonb_to_recordset(f.stages) AS g(time timestamptz, stage text, duration_s int)
+               ON CONFLICT DO NOTHING",
+        ],
     ),
 ];
 
@@ -199,17 +308,22 @@ pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreEr
         return Err(StoreError::UnknownDevice(i));
     }
     let mut inserted = 0;
-    for (kind, sql) in INSERTS {
+    for (kind, sqls) in INSERTS {
         let rows: Vec<&Frame> = frames.iter().filter(|f| f.kind() == kind).collect();
         if rows.is_empty() {
             continue;
         }
-        inserted += sqlx::query(sql)
-            .bind(sqlx::types::Json(rows))
-            .bind(user)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        for (i, sql) in sqls.iter().enumerate() {
+            let n = sqlx::query(*sql)
+                .bind(sqlx::types::Json(&rows))
+                .bind(user)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            if i == 0 {
+                inserted += n;
+            }
+        }
     }
     tx.commit().await?;
     Ok(inserted)
@@ -382,6 +496,31 @@ mod tests {
                 time: t,
                 event: "connected".into(),
             },
+            Frame::SkinTemp {
+                device_id: d(),
+                time: t,
+                sample_rate: 1,
+                celsius: vec![33.25, 33.5],
+            },
+            Frame::Sleep {
+                device_id: d(),
+                start_at: t,
+                end_at: t + TimeDelta::hours(8),
+                stages: vec![SleepStage {
+                    time: t,
+                    stage: crate::tools::Stage::Light,
+                    duration_s: 600,
+                }],
+            },
+            Frame::Recharge {
+                device_id: d(),
+                night: "2026-11-04".parse().unwrap(),
+                status: 4,
+                ans_charge: 2.5,
+                hrv_ms: Some(48.0),
+                breathing_rate: None,
+                hr_bpm: Some(52),
+            },
         ]
     }
 
@@ -430,8 +569,23 @@ mod tests {
         truncated.pop();
         assert!(matches!(
             decode("application/cbor-seq", &truncated),
-            Err(DecodeError::Invalid(4, _))
+            Err(DecodeError::Invalid(7, _))
         ));
+        for bad in [
+            r#"{"type":"skin_temp","device_id":1,"time":"2026-11-04T10:00:00Z","sample_rate":1,"celsius":[33,95]}"#,
+            r#"{"type":"sleep","device_id":1,"start_at":"2026-11-04T08:00:00Z","end_at":"2026-11-04T07:00:00Z"}"#,
+            r#"{"type":"sleep","device_id":1,"start_at":"2026-11-04T00:00:00Z","end_at":"2026-11-04T07:00:00Z",
+                "stages":[{"time":"2026-11-04T00:00:00Z","stage":"n3","duration_s":60}]}"#,
+            r#"{"type":"recharge","device_id":1,"night":"2026-11-04","status":7,"ans_charge":0}"#,
+        ] {
+            assert!(
+                matches!(
+                    decode("application/x-ndjson", bad.replace('\n', "").as_bytes()),
+                    Err(DecodeError::Invalid(0, _))
+                ),
+                "{bad}"
+            );
+        }
         assert_eq!(decode("application/json", b"[]"), Err(DecodeError::UnsupportedType));
     }
 

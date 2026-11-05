@@ -860,3 +860,57 @@ async fn sql_query_accepts_a_column_named_like_its_wrapper_alias() {
     let rows = sql(&v, &uid("alice"), "SELECT 1 AS t, 2 AS n").await.unwrap();
     assert_eq!(rows["rows"], json!([{ "t": 1, "n": 2 }]));
 }
+
+#[tokio::test]
+async fn loop_frames_round_trip() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    let lp = register(&db, &a, "Polar Loop", "C0FFEE01").await;
+    let body = [
+        json!({"type": "skin_temp", "device_id": lp, "time": "2026-10-03T01:00:00Z", "sample_rate": 1,
+               "celsius": [33.25, 33.5]}),
+        json!({"type": "sleep", "device_id": lp, "start_at": "2026-10-02T23:00:00Z", "end_at": "2026-10-03T07:00:00Z",
+               "stages": [{"time": "2026-10-02T23:00:00Z", "stage": "light", "duration_s": 3600},
+                          {"time": "2026-10-03T00:00:00Z", "stage": "deep", "duration_s": 1800}]}),
+        json!({"type": "recharge", "device_id": lp, "night": "2026-10-03", "status": 4, "ans_charge": 2.5,
+               "hrv_ms": 48, "breathing_rate": 14.5, "hr_bpm": 52}),
+    ]
+    .iter()
+    .map(|f| f.to_string() + "\n")
+    .collect::<String>()
+    .into_bytes();
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", None, body.clone()).await,
+        (200, json!({"frames": 3, "inserted": 3}))
+    );
+    // A re-sent night adds neither a session nor stages.
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", None, body).await,
+        (200, json!({"frames": 3, "inserted": 0}))
+    );
+
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT (SELECT celsius FROM skin_temp) AS celsius, (SELECT ans_charge FROM recharge) AS ans,
+                (SELECT device_id FROM sleep_session) AS device, (SELECT count(*) FROM sleep_stage) AS stages",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rows["rows"][0],
+        json!({"celsius": [33.25, 33.5], "ans": 2.5, "device": lp, "stages": 2})
+    );
+    assert_eq!(stage_seconds(&v, &a).await, json!({"light": 3600, "deep": 1800}));
+
+    // App sleep is read-only for the MCP write tools.
+    let id = sql(&v, &a, "SELECT id FROM sleep_session").await.unwrap()["rows"][0]["id"].clone();
+    let err = v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap_err();
+    assert!(err.contains("no manual sleep session"), "{err}");
+    let err = v
+        .sleep_update(p(json!({"id": id, "note": "x"})), as_user(&a))
+        .await
+        .unwrap_err();
+    assert!(err.contains("no manual sleep session"), "{err}");
+}
