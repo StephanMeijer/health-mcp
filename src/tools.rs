@@ -635,8 +635,9 @@ impl Vitals {
         let sql = p.sql.trim().trim_end_matches(';');
         let mut tx = self.db.reader_tx(user).await.map_err(db_err)?;
         // Newline before `)` so a trailing `--` comment can't swallow the wrapper.
+        // `t.*`, not `t`: a result column named `t` would otherwise shadow the whole row.
         let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-            "SELECT row_to_json(t)::text FROM (\n{sql}\n) t LIMIT {}",
+            "SELECT row_to_json(t.*)::text FROM (\n{sql}\n) t LIMIT {}",
             MAX_ROWS + 1
         )))
         .fetch_all(&mut *tx)
