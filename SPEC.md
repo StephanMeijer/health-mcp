@@ -7,7 +7,7 @@ It supports multiple users. Each user sees only their own data, and Postgres enf
 
 **In scope:** heart rate, HRV, blood pressure, body metrics (weight, body fat, SpO2, temperature) and sleep.
 Manual logging and correction through MCP tools. Typed query tools and a read-only SQL tool.
-An ingest API for raw chest-strap frames (Polar H10 via the vitals-app Android app).
+An ingest API for raw tracker frames (e.g. Polar H10 via the vitals-app Android app), with a per-user device registry.
 Auth with OAuth 2.1 as a resource server. A Dockerfile.
 
 **Out of scope:** other importers (they write to the DB directly and are trusted to set `user_id` and `source` correctly),
@@ -64,12 +64,15 @@ the IdP itself, Kubernetes manifests, continuous aggregates (they don't support 
 
 ## Schema
 
-All times are `timestamptz`. Units are fixed in column names. `source` is free text (`manual`, `withings`, …).
-Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source text NOT NULL`, plus a
-natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`.
+All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
+describe what they read with a `devices` row, so new importers need no new enum value).
+Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source vitals.source NOT NULL`, plus a
+natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exception is
+`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`: target that with `ON CONFLICT`.
 
 ```sql
-heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[])
+heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[], device_id int → devices,
+                UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time))
 hrv            (time, user_id, source, rmssd_ms real NOT NULL, note text)
 blood_pressure (time, user_id, source, systolic smallint NOT NULL, diastolic smallint NOT NULL,
                 pulse smallint, note text)
@@ -82,19 +85,25 @@ sleep_stage    (time, user_id, session_id → sleep_session ON DELETE CASCADE,
                 stage text CHECK (stage IN ('awake','light','deep','rem')), duration_s int NOT NULL)  -- hypertable
 ```
 
-Raw frames from the ingest API (`source = 'polar_h10'`), one row per frame as the device sent it, keyed
+```sql
+devices        (id int identity PK, user_id, model text, serial text, created_at,   -- plain table
+                UNIQUE (user_id, model, serial))       -- e.g. ('Polar H10', '244E7234')
+```
+
+Raw frames from the ingest API (`source = 'app'`), one row per frame as the device sent it, keyed
 `UNIQUE (user_id, source, device_id, time)`. `time` is the first sample; sample `i` (0-based) is at `time + i / sample_rate`.
 
 ```sql
-ecg            (time, user_id, source, device_id, sample_rate smallint, samples int[])        -- µV
-acc            (time, user_id, source, device_id, sample_rate smallint, x smallint[], y smallint[], z smallint[])  -- milli-g
-device_battery (time, user_id, source, device_id, level smallint)                             -- %
-device_event   (time, user_id, source, device_id, event text)
+ecg            (time, user_id, source, sample_rate smallint, samples int[], device_id int → devices)        -- µV
+acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g
+device_battery (time, user_id, source, level smallint, device_id)                             -- %
+device_event   (time, user_id, source, event text, device_id)
 ```
 
 Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat intervals), so the MCP tools see it.
-`heart_rate` has no `device_id`: an `hr` frame's `device_id` is required for uniformity but not stored, and duplicates
-match on `(user_id, source, time)`, so two straps of one user at the same instant collapse into one row.
+`heart_rate.device_id` is set for app rows and NULL for manual and imported ones, so two trackers of one user at the
+same instant are two rows, while rows without a device still deduplicate on `(user_id, source, time)` (NULLs compare equal).
+Rows from before migration 0003 (source `polar_h10`) have a `device_id` only if their user had exactly one device.
 
 The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
 with row security). Chunks older than 8 days are compressed, after the phone's 7-day outbox can no longer resend into them;
@@ -189,14 +198,14 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 - **Body:** `Content-Type: application/x-ndjson` (one frame per line, empty lines ignored) or `application/cbor-seq`
   (RFC 8742). Optional `Content-Encoding: zstd` or `gzip`. Frames, tagged by `type`, times RFC 3339 (µs precision):
   ```jsonl
-  {"type":"hr","device_id":"244E7234","time":"2026-11-04T10:00:00.123456Z","bpm":72,"rr_ms":[812,830]}
-  {"type":"ecg","device_id":"244E7234","time":"…","sample_rate":130,"samples":[-12,40]}
-  {"type":"acc","device_id":"244E7234","time":"…","sample_rate":200,"x":[1],"y":[2],"z":[-1000]}
-  {"type":"battery","device_id":"244E7234","time":"…","level":87}
-  {"type":"status","device_id":"244E7234","time":"…","event":"connected"}
+  {"type":"hr","device_id":1,"time":"2026-11-04T10:00:00.123456Z","bpm":72,"rr_ms":[812,830]}
+  {"type":"ecg","device_id":1,"time":"…","sample_rate":130,"samples":[-12,40]}
+  {"type":"acc","device_id":1,"time":"…","sample_rate":200,"x":[1],"y":[2],"z":[-1000]}
+  {"type":"battery","device_id":1,"time":"…","level":87}
+  {"type":"status","device_id":1,"time":"…","event":"connected"}
   ```
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
-  `hr` frames require `device_id` but don't store it (see Schema).
+  `device_id` is the id from `POST /api/v1/devices`; a frame with an id that isn't one of the user's devices is a `400`.
 - **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
 
 | Response | Meaning |
@@ -208,9 +217,18 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
 | `500` | Database error; retry |
 
-Ingest writes as `vitals_app`. On `heart_rate` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'polar_h10'`
-rows for the signed user; the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
-The raw tables rely on the server instead (see Schema).
+Ingest writes as `vitals_app`. On `heart_rate` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'app'`
+rows for the signed user and one of their devices; the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
+The raw tables rely on the server instead (see Schema): it checks every frame's `device_id` against the user's devices.
+
+### Devices
+
+The app keeps the id per tracker: on connect it registers the tracker and uses the returned id in its frames.
+Same auth as ingest.
+
+- `GET /api/v1/devices` → `200 [{"id":1,"model":"Polar H10","serial":"244E7234"}]`, the user's devices.
+- `POST /api/v1/devices` with `{"model":"Polar H10","serial":"244E7234"}` → `200 {"id":1}`. Idempotent: a known
+  `(model, serial)` returns its existing id. Both fields 1–100 characters, unknown fields are errors (`400`).
 
 ## Config (env)
 

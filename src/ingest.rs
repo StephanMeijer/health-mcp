@@ -1,10 +1,11 @@
 //! `POST /api/v1/ingest`: batches of device frames as JSONL or CBOR sequences, stored all-or-nothing.
+//! `GET`/`POST /api/v1/devices`: the user's devices, whose numeric ids the frames carry.
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,6 @@ use tower_http::decompression::RequestDecompressionLayer;
 use crate::auth::User;
 use crate::db::Db;
 
-/// The only source ingest may write (enforced again by the `ingest_insert` RLS policies).
-pub const SOURCE: &str = "polar_h10";
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
 pub const MAX_FRAMES: usize = 5000;
@@ -24,20 +23,20 @@ pub const MAX_FRAMES: usize = 5000;
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Frame {
     Hr {
-        device_id: String,
+        device_id: i32,
         time: DateTime<Utc>,
         bpm: i16,
         #[serde(default)]
         rr_ms: Vec<i16>,
     },
     Ecg {
-        device_id: String,
+        device_id: i32,
         time: DateTime<Utc>,
         sample_rate: i16,
         samples: Vec<i32>,
     },
     Acc {
-        device_id: String,
+        device_id: i32,
         time: DateTime<Utc>,
         sample_rate: i16,
         x: Vec<i16>,
@@ -45,12 +44,12 @@ pub enum Frame {
         z: Vec<i16>,
     },
     Battery {
-        device_id: String,
+        device_id: i32,
         time: DateTime<Utc>,
         level: i16,
     },
     Status {
-        device_id: String,
+        device_id: i32,
         time: DateTime<Utc>,
         event: String,
     },
@@ -59,30 +58,29 @@ pub enum Frame {
 impl Frame {
     /// Mirrors the table CHECKs, so a bad frame is reported by index instead of as a failed INSERT.
     fn check(&self) -> Result<(), &'static str> {
-        let (device_id, ok, why) = match self {
-            Frame::Hr { device_id, bpm, .. } => (device_id, (20..=250).contains(bpm), "bpm must be 20..=250"),
-            Frame::Ecg {
-                device_id, sample_rate, ..
-            } => (device_id, *sample_rate > 0, "sample_rate must be > 0"),
+        let (ok, why) = match self {
+            Frame::Hr { bpm, .. } => ((20..=250).contains(bpm), "bpm must be 20..=250"),
+            Frame::Ecg { sample_rate, .. } => (*sample_rate > 0, "sample_rate must be > 0"),
             Frame::Acc {
-                device_id,
-                sample_rate,
-                x,
-                y,
-                z,
-                ..
+                sample_rate, x, y, z, ..
             } => (
-                device_id,
                 *sample_rate > 0 && x.len() == y.len() && y.len() == z.len(),
                 "sample_rate must be > 0 and x, y, z equally long",
             ),
-            Frame::Battery { device_id, level, .. } => (device_id, (0..=100).contains(level), "level must be 0..=100"),
-            Frame::Status { device_id, event, .. } => (device_id, !event.is_empty(), "event must not be empty"),
+            Frame::Battery { level, .. } => ((0..=100).contains(level), "level must be 0..=100"),
+            Frame::Status { event, .. } => (!event.is_empty(), "event must not be empty"),
         };
-        if device_id.is_empty() {
-            return Err("device_id must not be empty");
-        }
         if ok { Ok(()) } else { Err(why) }
+    }
+
+    fn device_id(&self) -> i32 {
+        match self {
+            Frame::Hr { device_id, .. }
+            | Frame::Ecg { device_id, .. }
+            | Frame::Acc { device_id, .. }
+            | Frame::Battery { device_id, .. }
+            | Frame::Status { device_id, .. } => *device_id,
+        }
     }
 
     fn kind(&self) -> &'static str {
@@ -138,44 +136,68 @@ pub fn decode(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError
 const INSERTS: [(&str, &str); 5] = [
     (
         "hr",
-        "INSERT INTO vitals_data.heart_rate (time, user_id, source, bpm, rr_ms)
-            SELECT time, $2, $3, bpm, nullif(rr_ms, '{}') FROM jsonb_to_recordset($1)
-              AS f(time timestamptz, bpm smallint, rr_ms smallint[])
+        "INSERT INTO vitals_data.heart_rate (time, user_id, source, device_id, bpm, rr_ms)
+            SELECT time, $2, 'app', device_id, bpm, nullif(rr_ms, '{}') FROM jsonb_to_recordset($1)
+              AS f(time timestamptz, device_id int, bpm smallint, rr_ms smallint[])
             ON CONFLICT DO NOTHING",
     ),
     (
         "ecg",
         "INSERT INTO vitals_data.ecg (time, user_id, source, device_id, sample_rate, samples)
-             SELECT time, $2, $3, device_id, sample_rate, samples FROM jsonb_to_recordset($1)
-               AS f(time timestamptz, device_id text, sample_rate smallint, samples int[])
+             SELECT time, $2, 'app', device_id, sample_rate, samples FROM jsonb_to_recordset($1)
+               AS f(time timestamptz, device_id int, sample_rate smallint, samples int[])
              ON CONFLICT DO NOTHING",
     ),
     (
         "acc",
         "INSERT INTO vitals_data.acc (time, user_id, source, device_id, sample_rate, x, y, z)
-             SELECT time, $2, $3, device_id, sample_rate, x, y, z FROM jsonb_to_recordset($1)
-               AS f(time timestamptz, device_id text, sample_rate smallint, x smallint[], y smallint[], z smallint[])
+             SELECT time, $2, 'app', device_id, sample_rate, x, y, z FROM jsonb_to_recordset($1)
+               AS f(time timestamptz, device_id int, sample_rate smallint, x smallint[], y smallint[], z smallint[])
              ON CONFLICT DO NOTHING",
     ),
     (
         "battery",
         "INSERT INTO vitals_data.device_battery (time, user_id, source, device_id, level)
-                 SELECT time, $2, $3, device_id, level FROM jsonb_to_recordset($1)
-                   AS f(time timestamptz, device_id text, level smallint)
+                 SELECT time, $2, 'app', device_id, level FROM jsonb_to_recordset($1)
+                   AS f(time timestamptz, device_id int, level smallint)
                  ON CONFLICT DO NOTHING",
     ),
     (
         "status",
         "INSERT INTO vitals_data.device_event (time, user_id, source, device_id, event)
-                SELECT time, $2, $3, device_id, event FROM jsonb_to_recordset($1)
-                  AS f(time timestamptz, device_id text, event text)
+                SELECT time, $2, 'app', device_id, event FROM jsonb_to_recordset($1)
+                  AS f(time timestamptz, device_id int, event text)
                 ON CONFLICT DO NOTHING",
     ),
 ];
 
+pub enum StoreError {
+    /// Index of the first frame whose `device_id` isn't one of the user's devices.
+    UnknownDevice(usize),
+    Db(sqlx::Error),
+}
+
+impl From<sqlx::Error> for StoreError {
+    fn from(e: sqlx::Error) -> Self {
+        StoreError::Db(e)
+    }
+}
+
 /// Inserts all frames in one transaction; returns how many rows were new.
-pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> sqlx::Result<u64> {
+pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreError> {
     let mut tx = db.app_tx(user).await?;
+    // The raw tables have no RLS and their FK only proves the device exists, so ownership is checked here
+    // (RLS on devices hides other users' rows).
+    let mut ids: Vec<i32> = frames.iter().map(Frame::device_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let own: Vec<i32> = sqlx::query_scalar("SELECT id FROM vitals_data.devices WHERE id = ANY($1)")
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+    if let Some(i) = frames.iter().position(|f| !own.contains(&f.device_id())) {
+        return Err(StoreError::UnknownDevice(i));
+    }
     let mut inserted = 0;
     for (kind, sql) in INSERTS {
         let rows: Vec<&Frame> = frames.iter().filter(|f| f.kind() == kind).collect();
@@ -185,7 +207,6 @@ pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> sqlx::Result<u64> {
         inserted += sqlx::query(sql)
             .bind(sqlx::types::Json(rows))
             .bind(user)
-            .bind(SOURCE)
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -226,8 +247,87 @@ async fn ingest(
     };
     match store(&db, &user, &frames).await {
         Ok(inserted) => Json(json!({ "frames": frames.len(), "inserted": inserted })).into_response(),
-        Err(e) => {
+        Err(StoreError::UnknownDevice(i)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "frame": i, "error": "unknown device_id: register it with POST /api/v1/devices" })),
+        )
+            .into_response(),
+        Err(StoreError::Db(e)) => {
             tracing::error!("ingest of {} frames failed: {e}", frames.len());
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct Device {
+    id: i32,
+    model: String,
+    serial: String,
+}
+
+async fn list_devices(State(db): State<Db>, Extension(User(user)): Extension<User>) -> Response {
+    let devices = async {
+        let mut tx = db.app_tx(&user).await?;
+        sqlx::query_as::<_, Device>("SELECT id, model, serial FROM vitals_data.devices ORDER BY id")
+            .fetch_all(&mut *tx)
+            .await
+    };
+    match devices.await {
+        Ok(d) => Json(d).into_response(),
+        Err(e) => {
+            tracing::error!("listing devices failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewDevice {
+    model: String,
+    serial: String,
+}
+
+/// Idempotent: registering a known (model, serial) returns its existing id.
+async fn register_device(
+    State(db): State<Db>,
+    Extension(User(user)): Extension<User>,
+    body: Result<Json<NewDevice>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let d = match body {
+        Ok(Json(d)) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.body_text() }))).into_response(),
+    };
+    // Mirrors the table CHECKs (chars, like Postgres length()).
+    if [&d.model, &d.serial]
+        .iter()
+        .any(|s| !(1..=100).contains(&s.chars().count()))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "model and serial must be 1..=100 characters" })),
+        )
+            .into_response();
+    }
+    let id = async {
+        let mut tx = db.app_tx(&user).await?;
+        let id: i32 = sqlx::query_scalar(
+            "INSERT INTO vitals_data.devices (user_id, model, serial) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, model, serial) DO UPDATE SET model = EXCLUDED.model RETURNING id",
+        )
+        .bind(&user)
+        .bind(&d.model)
+        .bind(&d.serial)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>(id)
+    };
+    match id.await {
+        Ok(id) => Json(json!({ "id": id })).into_response(),
+        Err(e) => {
+            tracing::error!("registering a device failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -236,6 +336,7 @@ async fn ingest(
 /// The `/api` routes, without auth: callers add a layer that inserts [`User`].
 pub fn router<S: Clone + Send + Sync + 'static>(db: Db) -> Router<S> {
     Router::new()
+        .route("/v1/devices", get(list_devices).post(register_device))
         .route("/v1/ingest", post(ingest))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         // Unknown Content-Encoding → 415, which the app takes as "fall back to gzip".
@@ -249,7 +350,7 @@ mod tests {
 
     fn fixtures() -> Vec<Frame> {
         let t = "2026-11-04T10:00:00.123456Z".parse().unwrap();
-        let d = || "244E7234".to_owned();
+        let d = || 1;
         vec![
             Frame::Hr {
                 device_id: d(),
@@ -310,8 +411,8 @@ mod tests {
 
     #[test]
     fn reports_the_bad_frame() {
-        let body = b"{\"type\":\"battery\",\"device_id\":\"d\",\"time\":\"2026-11-04T10:00:00Z\",\"level\":5}\n\
-                     {\"type\":\"battery\",\"device_id\":\"d\",\"time\":\"2026-11-04T10:00:00Z\",\"level\":500}\n";
+        let body = b"{\"type\":\"battery\",\"device_id\":1,\"time\":\"2026-11-04T10:00:00Z\",\"level\":5}\n\
+                     {\"type\":\"battery\",\"device_id\":1,\"time\":\"2026-11-04T10:00:00Z\",\"level\":500}\n";
         assert!(matches!(
             decode("application/x-ndjson", body),
             Err(DecodeError::Invalid(1, _))
@@ -320,7 +421,7 @@ mod tests {
             decode("application/x-ndjson", b"{\"type\":\"nope\"}"),
             Err(DecodeError::Invalid(0, _))
         ));
-        let unknown = br#"{"type":"status","device_id":"d","time":"2026-11-04T10:00:00Z","event":"x","extra":1}"#;
+        let unknown = br#"{"type":"status","device_id":1,"time":"2026-11-04T10:00:00Z","event":"x","extra":1}"#;
         assert!(matches!(
             decode("application/x-ndjson", unknown),
             Err(DecodeError::Invalid(0, _))
@@ -338,7 +439,7 @@ mod tests {
     fn caps_the_batch() {
         let f: Vec<Frame> = (0..=MAX_FRAMES)
             .map(|_| Frame::Status {
-                device_id: "d".into(),
+                device_id: 1,
                 time: Utc::now(),
                 event: "x".into(),
             })
