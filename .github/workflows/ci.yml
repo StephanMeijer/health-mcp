@@ -43,7 +43,7 @@ jobs:
       - run: cargo test --locked
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -55,7 +55,7 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -134,7 +134,7 @@ jobs:
       !cancelled()
       && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/vitals-mcp'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: write
       pull-requests: write
