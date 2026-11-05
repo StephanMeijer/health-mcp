@@ -16,7 +16,8 @@ impl Db {
         let mut tx = self.app.begin().await?;
         sqlx::query(
             "SELECT set_config('vitals.user_id', $1, true),
-                    set_config('vitals.user_sig', vitals_private.sign($1), true)",
+                    set_config('vitals.user_sig', vitals_private.sign($1), true),
+                    set_config('statement_timeout', '30s', true)",
         )
         .bind(user)
         .execute(&mut *tx)

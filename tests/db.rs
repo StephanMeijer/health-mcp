@@ -98,8 +98,9 @@ async fn readings_round_trip() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(agg[0]["n"], 2);
-    assert_eq!(agg[0]["avg"], 65.0);
+    assert_eq!(agg["truncated"], false);
+    assert_eq!(agg["buckets"][0]["n"], 2);
+    assert_eq!(agg["buckets"][0]["avg"], 65.0);
 
     v.reading_update(
         p(json!({"kind": "heart_rate", "time": "2026-10-01T07:00:00Z", "set": {"bpm": 62}})),
@@ -684,4 +685,35 @@ async fn ingest_dedups_into_compressed_chunks() {
         post(frame("ecg", 0) + &frame("ecg", 1)).await,
         (200, json!({"frames": 2, "inserted": 1}))
     );
+}
+
+#[tokio::test]
+async fn reading_aggregate_caps_buckets_and_app_queries_time_out() {
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    let readings: Vec<Value> = (0..1001)
+        .map(|i| json!({"time": format!("2026-09-20T10:{:02}:{:02}Z", i / 60, i % 60), "bpm": 60}))
+        .collect();
+    v.reading_add(p(json!({"kind": "heart_rate", "readings": readings})), as_user(&a))
+        .await
+        .unwrap();
+    let agg: Value = serde_json::from_str(
+        &v.reading_aggregate(
+            p(json!({"kind": "heart_rate", "field": "bpm", "bucket": "1 second",
+                     "from": "2026-09-20T00:00:00Z", "to": "2026-09-21T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(agg["truncated"], true);
+    assert_eq!(agg["buckets"].as_array().unwrap().len(), 1000);
+
+    let mut tx = db.app_tx(&a).await.unwrap();
+    let timeout: String = sqlx::query_scalar("SHOW statement_timeout")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(timeout, "30s");
 }
