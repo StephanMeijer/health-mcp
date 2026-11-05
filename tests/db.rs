@@ -747,6 +747,21 @@ async fn app_role_cannot_write_other_sources_or_users() {
         .unwrap_err();
         assert!(err.to_string().contains("row-level security"), "{err}");
     }
+    // The ingest_insert policy itself (store() checks ownership first, so ingest never reaches it with a bad id):
+    // an app heart_rate row needs one of the signed user's devices.
+    let bobs = register(&db, &b, "Polar H10", "B").await;
+    for device in [Some(bobs), None] {
+        let mut tx = db.app_tx(&a).await.unwrap();
+        let err = sqlx::query(
+            "INSERT INTO vitals_data.heart_rate (time, user_id, source, device_id, bpm) VALUES (now(), $1, 'app', $2, 60)",
+        )
+        .bind(&a)
+        .bind(device.map(|d| d as i32))
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("row-level security"), "{device:?}: {err}");
+    }
     // Raw strap tables have no RLS (for compression); the app role may only insert, never read them.
     let mut tx = db.app_tx(&a).await.unwrap();
     let err = sqlx::query("SELECT 1 FROM vitals_data.ecg")

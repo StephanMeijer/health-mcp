@@ -678,7 +678,7 @@ ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with ti
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
 source is 'manual' for readings logged through this server, 'app' for trackers sent by the phone app, 'import' for importers.
-device_id → devices.id says which tracker recorded a row (NULL for manual readings).
+device_id → devices.id says which tracker recorded a row; NULL means unknown (manual, imported, or older app heart_rate rows), not "manual".
 
 Examples:
 -- daily average and max heart rate, Amsterdam days

@@ -67,7 +67,8 @@ the IdP itself, Kubernetes manifests, continuous aggregates (they don't support 
 All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
 describe what they read with a `devices` row, so new importers need no new enum value).
 Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source vitals.source NOT NULL`, plus a
-natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`.
+natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exception is
+`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`: target that with `ON CONFLICT`.
 
 ```sql
 heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[], device_id int → devices,
@@ -101,7 +102,7 @@ device_event   (time, user_id, source, event text, device_id)
 
 Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat intervals), so the MCP tools see it.
 `heart_rate.device_id` is set for app rows and NULL for manual and imported ones, so two trackers of one user at the
-same instant are two rows, while manual rows still deduplicate on `(user_id, source, time)`.
+same instant are two rows, while rows without a device still deduplicate on `(user_id, source, time)` (NULLs compare equal).
 Rows from before migration 0003 (source `polar_h10`) have a `device_id` only if their user had exactly one device.
 
 The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
