@@ -211,7 +211,9 @@ The raw tables rely on the server instead (see Schema).
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
-`OIDC_ISSUER`, `PUBLIC_URL` (e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`),
+`OIDC_ISSUER` (a trailing slash is fine; tokens are checked against the issuer its discovery document names),
+`PUBLIC_URL` (an origin without a path, e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`;
+the server refuses to start with a path),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
 Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`.
 
