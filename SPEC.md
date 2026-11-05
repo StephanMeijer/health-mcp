@@ -130,7 +130,7 @@ The design:
    With no grant on the base tables, chunks and `pg_stats` (which only lists readable columns) show the reader nothing.
 
 `sql_query` runs like this: `BEGIN`, `SET TRANSACTION READ ONLY`, `SET LOCAL statement_timeout = '5s'`, then the signed GUCs.
-The query runs as one prepared statement wrapped in `SELECT row_to_json(t) FROM (…) t LIMIT 1001`
+The query runs as one prepared statement wrapped in `SELECT row_to_json(t.*) FROM (…) t LIMIT 1001`
 (so `a; b`, `ROLLBACK; …` and data-modifying CTEs are rejected). At most 1000 rows come back, then `ROLLBACK`.
 The typed tools run as `vitals_app` with `statement_timeout = '30s'` per transaction (ingest too).
 
