@@ -27,6 +27,8 @@ the IdP itself, Kubernetes manifests, continuous aggregates (they don't support 
 - vitals-mcp is a **resource server only**. It never issues tokens.
 - It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [<issuer>]`, the exact issuer
   named in `OIDC_ISSUER`'s discovery document (it may differ from `OIDC_ISSUER` by a trailing slash).
+  It also advertises `scopes_supported: [openid, offline_access]`, so clients such as claude.ai request only those
+  instead of every scope the IdP lists. Every Authelia client for vitals-mcp must allow at least these two scopes.
 - `/mcp` without a valid bearer token returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - Token checks: signature (JWKS), `iss`, `aud` (= the resource, `PUBLIC_URL` + `/mcp`), `exp`, `nbf`. `user_id` = the token's `sub`.
 - The metadata is also served at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path insertion).
