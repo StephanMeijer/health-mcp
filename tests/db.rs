@@ -183,7 +183,7 @@ async fn imported_readings_are_read_only() {
     let (v, db, owner) = setup().await;
     let a = uid("alice");
     // Importers bypass RLS; the owner (superuser in dev) stands in for one.
-    sqlx::query("INSERT INTO vitals_data.heart_rate VALUES ('2026-10-02T07:00:00Z', $1, 'withings', 55, null)")
+    sqlx::query("INSERT INTO vitals_data.heart_rate VALUES ('2026-10-02T07:00:00Z', $1, 'import', 55, null)")
         .bind(&a)
         .execute(&owner)
         .await
@@ -207,19 +207,19 @@ async fn imported_readings_are_read_only() {
 
     // Even a server bug writing source != 'manual' is stopped by RLS.
     let mut tx = db.app_tx(&a).await.unwrap();
-    let raw = sqlx::query("UPDATE vitals_data.heart_rate SET bpm = 90 WHERE source = 'withings'")
+    let raw = sqlx::query("UPDATE vitals_data.heart_rate SET bpm = 90 WHERE source = 'import'")
         .execute(&mut *tx)
         .await
         .unwrap();
     assert_eq!(raw.rows_affected(), 0);
-    let ins = sqlx::query("INSERT INTO vitals_data.heart_rate VALUES (now(), $1, 'withings', 60, null)")
+    let ins = sqlx::query("INSERT INTO vitals_data.heart_rate VALUES (now(), $1, 'import', 60, null)")
         .bind(&a)
         .execute(&mut *tx)
         .await;
     assert!(ins.unwrap_err().to_string().contains("row-level security"));
 
     let rows = sql(&v, &a, "SELECT bpm, source FROM heart_rate").await.unwrap();
-    assert_eq!(rows["rows"], json!([{"bpm": 55, "source": "withings"}]));
+    assert_eq!(rows["rows"], json!([{"bpm": 55, "source": "import"}]));
 }
 
 #[tokio::test]
@@ -461,7 +461,7 @@ async fn imported_sleep_is_read_only() {
     // Importers bypass RLS; the owner (superuser in dev) stands in for one.
     let id: uuid::Uuid = sqlx::query_scalar(
         "WITH s AS (INSERT INTO vitals_data.sleep_session (user_id, source, start_at, end_at)
-                    VALUES ($1, 'withings', '2026-10-07T23:00:00Z', '2026-10-08T07:00:00Z') RETURNING id)
+                    VALUES ($1, 'import', '2026-10-07T23:00:00Z', '2026-10-08T07:00:00Z') RETURNING id)
          INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
          SELECT '2026-10-07T23:00:00Z', $1, id, 'deep', 1200 FROM s RETURNING session_id",
     )
@@ -506,35 +506,57 @@ async fn imported_sleep_is_read_only() {
 
     assert_eq!(stage_seconds(&v, &a).await, json!({"deep": 1200}));
     let row = sql(&v, &a, "SELECT source, note FROM sleep_session").await.unwrap();
-    assert_eq!(row["rows"], json!([{"source": "withings", "note": null}]));
+    assert_eq!(row["rows"], json!([{"source": "import", "note": null}]));
 }
 
 // Ingest ----------------------------------------------------------------------
 
-async fn post_ingest(db: &Db, user: &str, content_type: &str, encoding: Option<&str>, body: Vec<u8>) -> (u16, Value) {
+async fn api(db: &Db, user: &str, req: Request<axum::body::Body>) -> (u16, Value) {
     use tower::ServiceExt;
     let app: axum::Router = vitals_mcp::ingest::router(db.clone()).layer(axum::Extension(User(user.to_owned())));
-    let mut req = Request::post("/v1/ingest").header("content-type", content_type);
-    if let Some(e) = encoding {
-        req = req.header("content-encoding", e);
-    }
-    let res = app
-        .oneshot(req.body(axum::body::Body::from(body)).unwrap())
-        .await
-        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
-fn polar_batch() -> Vec<u8> {
+async fn post_ingest(db: &Db, user: &str, content_type: &str, encoding: Option<&str>, body: Vec<u8>) -> (u16, Value) {
+    let mut req = Request::post("/v1/ingest").header("content-type", content_type);
+    if let Some(e) = encoding {
+        req = req.header("content-encoding", e);
+    }
+    api(db, user, req.body(axum::body::Body::from(body)).unwrap()).await
+}
+
+async fn list_devices(db: &Db, user: &str) -> (u16, Value) {
+    api(
+        db,
+        user,
+        Request::get("/v1/devices").body(axum::body::Body::empty()).unwrap(),
+    )
+    .await
+}
+
+async fn register(db: &Db, user: &str, model: &str, serial: &str) -> i64 {
+    let req = Request::post("/v1/devices")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"model": model, "serial": serial}).to_string(),
+        ))
+        .unwrap();
+    let (status, body) = api(db, user, req).await;
+    assert_eq!(status, 200, "{body}");
+    body["id"].as_i64().unwrap()
+}
+
+fn polar_batch(device: i64) -> Vec<u8> {
     [
-        json!({"type": "hr", "device_id": "244E7234", "time": "2026-10-02T08:00:00.123456Z", "bpm": 61, "rr_ms": [980, 990]}),
-        json!({"type": "ecg", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": [-12, 40, 7]}),
-        json!({"type": "acc", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "sample_rate": 200,
+        json!({"type": "hr", "device_id": device, "time": "2026-10-02T08:00:00.123456Z", "bpm": 61, "rr_ms": [980, 990]}),
+        json!({"type": "ecg", "device_id": device, "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": [-12, 40, 7]}),
+        json!({"type": "acc", "device_id": device, "time": "2026-10-02T08:00:00Z", "sample_rate": 200,
                "x": [1, 2], "y": [3, 4], "z": [-1000, -999]}),
-        json!({"type": "battery", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "level": 87}),
-        json!({"type": "status", "device_id": "244E7234", "time": "2026-10-02T08:00:00Z", "event": "connected"}),
+        json!({"type": "battery", "device_id": device, "time": "2026-10-02T08:00:00Z", "level": 87}),
+        json!({"type": "status", "device_id": device, "time": "2026-10-02T08:00:00Z", "event": "connected"}),
     ]
     .iter()
     .map(|f| f.to_string() + "\n")
@@ -546,12 +568,13 @@ fn polar_batch() -> Vec<u8> {
 async fn ingest_stores_once_and_shows_up_in_tools() {
     let (v, db, _) = setup().await;
     let a = uid("alice");
+    let h10 = register(&db, &a, "Polar H10", "244E7234").await;
     assert_eq!(
-        post_ingest(&db, &a, "application/x-ndjson", None, polar_batch()).await,
+        post_ingest(&db, &a, "application/x-ndjson", None, polar_batch(h10)).await,
         (200, json!({"frames": 5, "inserted": 5}))
     );
     // A retried batch is a no-op, also zstd-compressed.
-    let zstd = zstd::encode_all(&polar_batch()[..], 1).unwrap();
+    let zstd = zstd::encode_all(&polar_batch(h10)[..], 1).unwrap();
     assert_eq!(
         post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), zstd).await,
         (200, json!({"frames": 5, "inserted": 0}))
@@ -559,7 +582,7 @@ async fn ingest_stores_once_and_shows_up_in_tools() {
 
     let list: Value = serde_json::from_str(
         &v.reading_list(
-            p(json!({"kind": "heart_rate", "source": "polar_h10", "from": "2026-10-01T00:00:00Z"})),
+            p(json!({"kind": "heart_rate", "source": "app", "from": "2026-10-01T00:00:00Z"})),
             as_user(&a),
         )
         .await
@@ -596,8 +619,11 @@ async fn ingest_stores_once_and_shows_up_in_tools() {
 async fn ingest_is_all_or_nothing() {
     let (v, db, _) = setup().await;
     let a = uid("alice");
-    let mut body = polar_batch();
-    body.extend_from_slice(br#"{"type":"hr","device_id":"d","time":"2026-10-02T08:00:01Z","bpm":0}"#);
+    let h10 = register(&db, &a, "Polar H10", "244E7234").await;
+    let mut body = polar_batch(h10);
+    body.extend_from_slice(
+        format!(r#"{{"type":"hr","device_id":{h10},"time":"2026-10-02T08:00:01Z","bpm":0}}"#).as_bytes(),
+    );
     let (status, err) = post_ingest(&db, &a, "application/x-ndjson", None, body).await;
     assert_eq!((status, &err["frame"]), (400, &json!(5)));
     let rows = sql(
@@ -611,6 +637,74 @@ async fn ingest_is_all_or_nothing() {
 }
 
 #[tokio::test]
+async fn devices_are_per_user_and_registration_is_idempotent() {
+    let (v, db, _) = setup().await;
+    let (a, b) = (uid("alice"), uid("bob"));
+    let h10 = register(&db, &a, "Polar H10", "244E7234").await;
+    assert_eq!(register(&db, &a, "Polar H10", "244E7234").await, h10);
+    let loop_ = register(&db, &a, "Polar Loop", "244E7234").await;
+    assert_ne!(loop_, h10);
+    assert_eq!(
+        list_devices(&db, &a).await,
+        (
+            200,
+            json!([{"id": h10, "model": "Polar H10", "serial": "244E7234"},
+                   {"id": loop_, "model": "Polar Loop", "serial": "244E7234"}])
+        )
+    );
+    assert_eq!(list_devices(&db, &b).await, (200, json!([])));
+    assert_eq!(
+        sql(&v, &b, "SELECT count(*) AS n FROM devices").await.unwrap()["rows"][0]["n"],
+        0
+    );
+
+    // Bob can't write into Alice's device, nor into one that doesn't exist; nothing of the batch is stored.
+    for device in [h10, i64::from(i32::MAX)] {
+        let (status, err) = post_ingest(&db, &b, "application/x-ndjson", None, polar_batch(device)).await;
+        assert_eq!((status, &err["frame"]), (400, &json!(0)), "{err}");
+    }
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT (SELECT count(*) FROM ecg) + (SELECT count(*) FROM heart_rate) AS n",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows["rows"][0]["n"], 0);
+
+    let bad = Request::post("/v1/devices")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"model":"","serial":"x"}"#))
+        .unwrap();
+    assert_eq!(api(&db, &a, bad).await.0, 400);
+}
+
+#[tokio::test]
+async fn two_trackers_at_the_same_instant_are_two_heart_rate_rows() {
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    let body: String = [
+        register(&db, &a, "Polar H10", "A").await,
+        register(&db, &a, "Polar Loop", "B").await,
+    ]
+    .iter()
+    .map(|d| json!({"type": "hr", "device_id": d, "time": "2026-10-03T08:00:00Z", "bpm": 60}).to_string() + "\n")
+    .collect();
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes()).await,
+        (200, json!({"frames": 2, "inserted": 2}))
+    );
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT d.model FROM heart_rate h JOIN devices d ON d.id = h.device_id ORDER BY 1",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows["rows"], json!([{"model": "Polar H10"}, {"model": "Polar Loop"}]));
+}
+
+#[tokio::test]
 async fn ingest_rejects_unsupported_requests() {
     let (_, db, _) = setup().await;
     let a = uid("alice");
@@ -619,7 +713,7 @@ async fn ingest_rejects_unsupported_requests() {
         415
     );
     assert_eq!(
-        post_ingest(&db, &a, "application/x-ndjson", Some("br-nope"), polar_batch())
+        post_ingest(&db, &a, "application/x-ndjson", Some("br-nope"), polar_batch(1))
             .await
             .0,
         415
@@ -641,15 +735,16 @@ async fn ingest_rejects_unsupported_requests() {
 async fn app_role_cannot_write_other_sources_or_users() {
     let (_, db, _) = setup().await;
     let (a, b) = (uid("alice"), uid("bob"));
-    for (user, source) in [(&a, "evil"), (&b, "polar_h10")] {
+    for (user, source) in [(&a, "import"), (&b, "app")] {
         let mut tx = db.app_tx(&a).await.unwrap();
-        let err =
-            sqlx::query("INSERT INTO vitals_data.heart_rate (time, user_id, source, bpm) VALUES (now(), $1, $2, 60)")
-                .bind(user)
-                .bind(source)
-                .execute(&mut *tx)
-                .await
-                .unwrap_err();
+        let err = sqlx::query(
+            "INSERT INTO vitals_data.heart_rate (time, user_id, source, bpm) VALUES (now(), $1, $2::vitals.source, 60)",
+        )
+        .bind(user)
+        .bind(source)
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("row-level security"), "{err}");
     }
     // Raw strap tables have no RLS (for compression); the app role may only insert, never read them.
@@ -665,12 +760,13 @@ async fn app_role_cannot_write_other_sources_or_users() {
 async fn ingest_dedups_into_compressed_chunks() {
     let (_, db, owner) = setup().await;
     let a = uid("alice");
+    let d = register(&db, &a, "Polar H10", "244E7234").await;
     // A day no other test writes to, so compressing its chunks can't disturb them.
     let frame = |kind: &str, sec: u32| {
         let t = format!("2026-09-15T08:00:{sec:02}Z");
         match kind {
-            "ecg" => json!({"type": "ecg", "device_id": "d", "time": t, "sample_rate": 130, "samples": [1, 2]}),
-            _ => json!({"type": "acc", "device_id": "d", "time": t, "sample_rate": 200, "x": [1], "y": [2], "z": [3]}),
+            "ecg" => json!({"type": "ecg", "device_id": d, "time": t, "sample_rate": 130, "samples": [1, 2]}),
+            _ => json!({"type": "acc", "device_id": d, "time": t, "sample_rate": 200, "x": [1], "y": [2], "z": [3]}),
         }
         .to_string()
             + "\n"

@@ -2,7 +2,8 @@
 
 A remote MCP server that stores and queries personal vitals (heart rate, HRV, blood pressure, body metrics and sleep) in TimescaleDB.
 It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and offers typed tools plus a read-only SQL tool.
-Raw Polar H10 chest-strap data arrives through an ingest API (`POST /api/v1/ingest`).
+Raw tracker data (e.g. a Polar H10 chest strap) arrives through an ingest API (`POST /api/v1/ingest`),
+from devices the app registers per user (`/api/v1/devices`).
 Design and security model: [SPEC.md](SPEC.md).
 
 ## Run

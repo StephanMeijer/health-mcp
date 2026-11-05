@@ -147,7 +147,7 @@ pub struct ReadingList {
     pub from: Option<DateTime<Utc>>,
     /// Default: now.
     pub to: Option<DateTime<Utc>>,
-    /// Only this source (e.g. "manual", "withings").
+    /// Only this source: "manual", "app" or "import".
     pub source: Option<String>,
     /// Max rows, default 100, at most 1000.
     pub limit: Option<i64>,
@@ -402,7 +402,7 @@ impl Vitals {
         sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT coalesce(json_agg(to_jsonb(r) - 'user_id' ORDER BY r.time {dir}), '[]')::text FROM (
                SELECT * FROM vitals_data.{t}
-               WHERE time >= $1 AND time < $2 AND ($3::text IS NULL OR source = $3)
+               WHERE time >= $1 AND time < $2 AND ($3::text IS NULL OR source::text = $3)
                ORDER BY time {dir} LIMIT $4) r"
         )))
         .bind(from)
@@ -442,7 +442,7 @@ impl Vitals {
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY {f}) AS p50,
                       percentile_cont(0.9) WITHIN GROUP (ORDER BY {f}) AS p90
                FROM vitals_data.{t}
-               WHERE time >= $3 AND time < $4 AND {f} IS NOT NULL AND ($5::text IS NULL OR source = $5)
+               WHERE time >= $3 AND time < $4 AND {f} IS NOT NULL AND ($5::text IS NULL OR source::text = $5)
                GROUP BY 1 ORDER BY 1 LIMIT {}) b ORDER BY b.bucket",
             MAX_ROWS + 1
         )))
@@ -660,22 +660,25 @@ fn capped_json(rows: &[String], key: &str) -> String {
 
 const SCHEMA_DOC: &str = r#"Views (only your own rows are visible; times are timestamptz, UTC unless you convert):
 
-heart_rate     (time, user_id, source, bpm smallint, note, rr_ms smallint[])  -- rr_ms: beat-to-beat intervals (chest strap only)
+heart_rate     (time, user_id, source, bpm smallint, note, rr_ms smallint[], device_id)  -- rr_ms: beat-to-beat intervals (chest strap only)
 hrv            (time, user_id, source, rmssd_ms real, note)            -- RMSSD in ms
 blood_pressure (time, user_id, source, systolic smallint, diastolic smallint, pulse smallint, note)  -- mmHg, bpm
 body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note)  -- any subset non-null
 sleep_session  (id uuid, user_id, source, start_at, end_at, note)
 sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'light'|'deep'|'rem', duration_s int)
 
-Raw chest-strap frames (source 'polar_h10'); one row per frame, sample i is at time + (i - 1) / sample_rate seconds:
-ecg            (time, user_id, source, device_id, sample_rate smallint, samples int[])   -- µV, 130 Hz
-acc            (time, user_id, source, device_id, sample_rate smallint, x smallint[], y smallint[], z smallint[])  -- milli-g, 1000 ≈ 1 g, 200 Hz
-device_battery (time, user_id, source, device_id, level smallint)  -- %
-device_event   (time, user_id, source, device_id, event text)      -- e.g. connected, disconnected
+devices        (id int, user_id, model, serial, created_at)  -- e.g. model 'Polar H10', serial '244E7234'
+
+Raw tracker frames (source 'app'); one row per frame, sample i is at time + (i - 1) / sample_rate seconds:
+ecg            (time, user_id, source, sample_rate smallint, samples int[], device_id)   -- µV, 130 Hz
+acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g, 1000 ≈ 1 g, 200 Hz
+device_battery (time, user_id, source, level smallint, device_id)  -- %
+device_event   (time, user_id, source, event text, device_id)      -- e.g. connected, disconnected
 ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with time_bucket, never return raw arrays for long periods.
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
-source is 'manual' for readings logged through this server, 'polar_h10' for the chest strap, otherwise the importer name (e.g. 'withings').
+source is 'manual' for readings logged through this server, 'app' for trackers sent by the phone app, 'import' for importers.
+device_id → devices.id says which tracker recorded a row (NULL for manual readings).
 
 Examples:
 -- daily average and max heart rate, Amsterdam days
