@@ -25,7 +25,8 @@ the IdP itself, Kubernetes manifests, continuous aggregates (they don't support 
 ## Auth
 
 - vitals-mcp is a **resource server only**. It never issues tokens.
-- It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [OIDC_ISSUER]`.
+- It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [<issuer>]`, the exact issuer
+  named in `OIDC_ISSUER`'s discovery document (it may differ from `OIDC_ISSUER` by a trailing slash).
 - `/mcp` without a valid bearer token returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - Token checks: signature (JWKS), `iss`, `aud` (= the resource, `PUBLIC_URL` + `/mcp`), `exp`, `nbf`. `user_id` = the token's `sub`.
 - The metadata is also served at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path insertion).
@@ -212,7 +213,9 @@ The raw tables rely on the server instead (see Schema).
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
-`OIDC_ISSUER`, `PUBLIC_URL` (e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`),
+`OIDC_ISSUER` (a trailing slash is fine; tokens are checked against the issuer its discovery document names),
+`PUBLIC_URL` (an origin without a path, e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`;
+the server refuses to start with a path),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
 Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`.
 

@@ -42,12 +42,19 @@ impl Verifier {
         let http = reqwest::Client::builder().timeout(IDP_TIMEOUT).build()?;
         #[derive(Deserialize)]
         struct Discovery {
+            issuer: String,
             jwks_uri: String,
         }
         let url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
         let d: Discovery = http.get(url).send().await?.error_for_status()?.json().await?;
+        // Tokens carry the IdP's exact issuer (OIDC Discovery §4.3), so a trailing slash in the config can't break `iss`.
+        anyhow::ensure!(
+            d.issuer.trim_end_matches('/') == issuer.trim_end_matches('/'),
+            "OIDC_ISSUER is {issuer}, but its discovery document names issuer {}",
+            d.issuer
+        );
         let jwks: JwkSet = http.get(&d.jwks_uri).send().await?.error_for_status()?.json().await?;
-        Ok(Self::new(issuer, resource, d.jwks_uri, jwks, http))
+        Ok(Self::new(&d.issuer, resource, d.jwks_uri, jwks, http))
     }
 
     pub fn new(issuer: &str, resource: &str, jwks_uri: String, jwks: JwkSet, http: reqwest::Client) -> Self {
@@ -325,6 +332,37 @@ mod tests {
         first.abort(); // its client disconnected
         let next = tokio::time::timeout(Duration::from_secs(2), v.verify(&t)).await;
         assert_eq!(next.expect("refresh never finished"), Ok("alice".into()));
+    }
+
+    /// A fake IdP whose discovery document names `issuer` (default: its own origin, without a trailing slash).
+    async fn fake_idp(issuer: Option<&str>) -> String {
+        use axum::routing::get;
+        let jwks = serde_json::to_value(&*verifier().jwks.try_read().unwrap()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let discovery = json!({"issuer": issuer.unwrap_or(&origin), "jwks_uri": format!("{origin}/jwks")});
+        let idp = axum::Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                get(move || async move { Json(discovery) }),
+            )
+            .route("/jwks", get(move || async move { Json(jwks) }));
+        tokio::spawn(async move { axum::serve(listener, idp).await });
+        origin
+    }
+
+    #[tokio::test]
+    async fn discover_uses_the_idps_issuer() {
+        let origin = fake_idp(None).await;
+        let v = Verifier::discover(&format!("{origin}/"), AUD).await.unwrap();
+        assert_eq!(
+            v.verify(&token("at+jwt", claims(&origin, AUD, 300))).await,
+            Ok("alice".into())
+        );
+
+        let other = fake_idp(Some("https://evil.example.com")).await;
+        let err = Verifier::discover(&other, AUD).await.err().unwrap();
+        assert!(err.to_string().contains("evil.example.com"), "{err}");
     }
 
     fn app() -> axum::Router {

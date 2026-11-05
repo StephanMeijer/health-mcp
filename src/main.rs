@@ -14,6 +14,10 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let public_url = reqwest::Url::parse(&env("PUBLIC_URL")?).context("PUBLIC_URL")?;
+    anyhow::ensure!(
+        public_url.path() == "/",
+        "PUBLIC_URL must be an origin without a path, e.g. https://vitals.example.com"
+    );
     // The MCP endpoint URL is both the RFC 9728 resource and the required token audience.
     let resource = public_url.join("mcp")?.to_string();
     // Same scheme for the device API: its own resource and audience, so MCP tokens don't work there and vice versa.

@@ -18,6 +18,7 @@ docker run -p 8080:8080 \
   vitals-mcp
 ```
 
+`PUBLIC_URL` must be an origin without a path; the server refuses to start otherwise.
 On startup the server runs migrations as `DATABASE_OWNER_URL`. Leave that variable unset to skip them.
 The owner needs `CREATEROLE` the first time, or you create the roles yourself beforehand:
 
