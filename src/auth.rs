@@ -171,6 +171,8 @@ pub async fn metadata(State(v): State<Arc<Verifier>>) -> impl IntoResponse {
         "resource": v.resource,
         "authorization_servers": [v.issuer],
         "bearer_methods_supported": ["header"],
+        // Without this, clients like claude.ai request every scope the IdP lists, and Authelia rejects ones the client lacks.
+        "scopes_supported": ["openid", "offline_access"],
     }))
 }
 
@@ -426,12 +428,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_names_resource_and_issuer() {
+    async fn metadata_names_resource_issuer_and_scopes() {
         let (status, _, body) = call("/.well-known/oauth-protected-resource/mcp", None).await;
         assert_eq!(status, StatusCode::OK);
         let m: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["resource"], AUD);
         assert_eq!(m["authorization_servers"], json!([ISS]));
+        assert_eq!(m["scopes_supported"], json!(["openid", "offline_access"]));
     }
 
     #[test]
