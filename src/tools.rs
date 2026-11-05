@@ -415,7 +415,7 @@ impl Vitals {
     }
 
     #[tool(
-        description = "Aggregate one field per time bucket: n, avg, min, max, stddev, p50, p90. E.g. daily resting heart rate, weekly weight trend."
+        description = "Aggregate one field per time bucket: n, avg, min, max, stddev, p50, p90. E.g. daily resting heart rate, weekly weight trend. At most 1000 buckets; truncated = true means use a wider bucket or a shorter range."
     )]
     pub async fn reading_aggregate(
         &self,
@@ -434,8 +434,8 @@ impl Vitals {
         let (from, to) = range(p.from, p.to);
         let t = p.kind.table();
         let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
-        sqlx::query_scalar(AssertSqlSafe(format!(
-            "SELECT coalesce(json_agg(b ORDER BY b.bucket), '[]')::text FROM (
+        let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT row_to_json(b)::text FROM (
                SELECT time_bucket($1::interval, time, $2) AS bucket, count({f}) AS n,
                       round(avg({f})::numeric, 2) AS avg, min({f}) AS min, max({f}) AS max,
                       round(stddev_samp({f})::numeric, 2) AS stddev,
@@ -443,16 +443,18 @@ impl Vitals {
                       percentile_cont(0.9) WITHIN GROUP (ORDER BY {f}) AS p90
                FROM vitals_data.{t}
                WHERE time >= $3 AND time < $4 AND {f} IS NOT NULL AND ($5::text IS NULL OR source = $5)
-               GROUP BY 1) b"
+               GROUP BY 1 ORDER BY 1 LIMIT {}) b ORDER BY b.bucket",
+            MAX_ROWS + 1
         )))
         .bind(p.bucket.as_deref().unwrap_or("1 day"))
         .bind(p.tz.as_deref().unwrap_or("UTC"))
         .bind(from)
         .bind(to)
         .bind(p.source)
-        .fetch_one(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(db_err)
+        .map_err(db_err)?;
+        Ok(capped_json(&rows, "buckets"))
     }
 
     #[tool(description = "Log a manual sleep session, optionally with stage segments (awake, light, deep, rem).")]
@@ -635,19 +637,25 @@ impl Vitals {
         // Newline before `)` so a trailing `--` comment can't swallow the wrapper.
         let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT row_to_json(t)::text FROM (\n{sql}\n) t LIMIT {}",
-            MAX_SQL_ROWS + 1
+            MAX_ROWS + 1
         )))
         .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
         tx.rollback().await.map_err(db_err)?;
-        let truncated = rows.len() > MAX_SQL_ROWS;
-        let rows = &rows[..rows.len().min(MAX_SQL_ROWS)];
-        Ok(format!(r#"{{"truncated":{truncated},"rows":[{}]}}"#, rows.join(",")))
+        Ok(capped_json(&rows, "rows"))
     }
 }
 
-const MAX_SQL_ROWS: usize = 1000;
+/// Most rows a tool returns, so one call can't flood the model (a strap writes heart rate every second).
+const MAX_ROWS: usize = 1000;
+
+/// `{"truncated": …, "<key>": [...]}` from JSON rows fetched with `LIMIT MAX_ROWS + 1`.
+fn capped_json(rows: &[String], key: &str) -> String {
+    let truncated = rows.len() > MAX_ROWS;
+    let rows = &rows[..rows.len().min(MAX_ROWS)];
+    format!(r#"{{"truncated":{truncated},"{key}":[{}]}}"#, rows.join(","))
+}
 
 const SCHEMA_DOC: &str = r#"Views (only your own rows are visible; times are timestamptz, UTC unless you convert):
 

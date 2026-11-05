@@ -129,6 +129,7 @@ The design:
 `sql_query` runs like this: `BEGIN`, `SET TRANSACTION READ ONLY`, `SET LOCAL statement_timeout = '5s'`, then the signed GUCs.
 The query runs as one prepared statement wrapped in `SELECT row_to_json(t) FROM (…) t LIMIT 1001`
 (so `a; b`, `ROLLBACK; …` and data-modifying CTEs are rejected). At most 1000 rows come back, then `ROLLBACK`.
+The typed tools run as `vitals_app` with `statement_timeout = '30s'` per transaction (ingest too).
 
 **Isolation tests** (`tests/db.rs`, all passing). User A tries to read or change user B's rows through each of these,
 and every attempt fails: a forged `set_config`, `set_config('role')`, a direct chunk query, the base tables, `pg_stats`,
@@ -146,7 +147,7 @@ Tools that bucket by day also take `tz`, an IANA zone (default `UTC`).
 | `reading_update` | Change the fields of the manual reading identified by (`kind`, `time`). |
 | `reading_delete` | Delete manual readings by exact times, or by `kind` + time range. Returns the number deleted. |
 | `reading_list` | Raw readings: `kind`, `from`, `to`, optional `source`, `limit` (≤1000), `oldest_first`. |
-| `reading_aggregate` | `time_bucket(bucket, time, tz)` over `kind`/`field`, with `avg`, `min`, `max`, `count`, `stddev`, `p50`, `p90`, and optional `source`. |
+| `reading_aggregate` | `time_bucket(bucket, time, tz)` over `kind`/`field`, with `avg`, `min`, `max`, `count`, `stddev`, `p50`, `p90`, and optional `source`. At most 1000 buckets: `{"truncated": …, "buckets": […]}`. |
 | `sleep_add` / `sleep_update` / `sleep_delete` | A session with optional stages. |
 | `sleep_list` | Sessions in a range, with `include_stages` and per-stage totals. |
 | `summary` | For each vital: the latest value plus 7-day and 30-day averages. Sleep: average duration and stage split over the last 7 and 30 days. |
