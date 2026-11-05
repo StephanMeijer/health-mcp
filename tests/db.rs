@@ -717,3 +717,10 @@ async fn reading_aggregate_caps_buckets_and_app_queries_time_out() {
         .unwrap();
     assert_eq!(timeout, "30s");
 }
+
+#[tokio::test]
+async fn sql_query_accepts_a_column_named_like_its_wrapper_alias() {
+    let (v, _, _) = setup().await;
+    let rows = sql(&v, &uid("alice"), "SELECT 1 AS t, 2 AS n").await.unwrap();
+    assert_eq!(rows["rows"], json!([{ "t": 1, "n": 2 }]));
+}
