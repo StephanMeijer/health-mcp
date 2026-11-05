@@ -25,7 +25,8 @@ the IdP itself, Kubernetes manifests, continuous aggregates (they don't support 
 ## Auth
 
 - vitals-mcp is a **resource server only**. It never issues tokens.
-- It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [OIDC_ISSUER]`.
+- It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [<issuer>]`, the exact issuer
+  named in `OIDC_ISSUER`'s discovery document (it may differ from `OIDC_ISSUER` by a trailing slash).
 - `/mcp` without a valid bearer token returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - Token checks: signature (JWKS), `iss`, `aud` (= the resource, `PUBLIC_URL` + `/mcp`), `exp`, `nbf`. `user_id` = the token's `sub`.
 - The metadata is also served at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path insertion).
