@@ -45,6 +45,9 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 16;
 /// Above the 30 s statement timeout, so a slow query fails with its own error first. Includes time spent waiting.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long `/readyz` reuses its last database check.
+const READY_CACHE: Duration = Duration::from_secs(1);
+
 /// Bounds the work of every route added to `router` so far (not its fallback): `max` requests at once across all of
 /// them (one shared semaphore), each answered `408` after `timeout`. The slot is taken inside the timed future, so
 /// time spent waiting for one counts towards `timeout`.
@@ -67,6 +70,8 @@ fn limits<S: Clone + Send + Sync + 'static>(router: Router<S>, max: usize, timeo
 /// All routes. `verifier` guards `/mcp`, `api_verifier` guards `/api`: each has its own audience,
 /// so MCP tokens don't work on `/api` and vice versa. `host` is the only allowed `Host` for `/mcp`.
 pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier: Arc<auth::Verifier>) -> Router {
+    let ready_db = db.clone();
+    let last_ready = Arc::new(tokio::sync::Mutex::new(None::<(std::time::Instant, bool)>));
     let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(api_verifier.clone(), auth::require));
 
     // Stateless: any replica can serve any request, no sticky sessions needed in K8s.
@@ -92,7 +97,30 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
             "/.well-known/oauth-protected-resource/api",
             get(auth::metadata).with_state(api_verifier),
         )
+        // Liveness: the process answers. Readiness: it can also reach the database.
         .route("/healthz", get(|| async { "ok" }))
+        .route(
+            "/readyz",
+            get(move || {
+                let (db, last) = (ready_db.clone(), last_ready.clone());
+                async move {
+                    // Unauthenticated: one check at a time per process, and concurrent probes share its result.
+                    let mut last = last.lock().await;
+                    let ready = match *last {
+                        Some((at, ready)) if at.elapsed() < READY_CACHE => ready,
+                        _ => {
+                            let ready = db.ready().await;
+                            *last = Some((std::time::Instant::now(), ready));
+                            ready
+                        }
+                    };
+                    match ready {
+                        true => (StatusCode::OK, "ok"),
+                        false => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+                    }
+                }
+            }),
+        )
         .with_state(verifier)
 }
 
@@ -165,6 +193,22 @@ mod tests {
             statuses,
             (StatusCode::OK, StatusCode::REQUEST_TIMEOUT, Ok(StatusCode::NOT_FOUND))
         );
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_an_unreachable_database() {
+        // Port 1: nothing listens, so connecting fails at once.
+        let pool = || sqlx::PgPool::connect_lazy("postgres://localhost:1/none").unwrap();
+        let db = db::Db {
+            app: pool(),
+            reader: pool(),
+        };
+        let app = app(db, "vitals.example.com".into(), verifier(MCP), verifier(API));
+        let res = app
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     const SECRET: &str = "test-secret-at-least-32-bytes-long!!";

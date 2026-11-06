@@ -303,7 +303,10 @@ The app calls the same tools as MCP clients, with the same arguments and results
 `PUBLIC_URL` (an origin without a path, e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`;
 the server refuses to start with a path),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
-Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`.
+Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`
+(liveness: always `200` while the process runs), `/readyz` (readiness: `200` when both database pools reach the database
+within 2 s, else `503`; a pool whose connections are all busy counts as reachable, one check runs at a time per process,
+and its result is reused for 1 s).
 
 Limits (constants in the code):
 

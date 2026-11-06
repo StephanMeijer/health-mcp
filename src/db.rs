@@ -30,6 +30,27 @@ pub struct Db {
 }
 
 impl Db {
+    /// Readiness: both pools reach the database within 2 s. Checks reachability, not free capacity: an idle
+    /// connection runs `SELECT 1`; when every connection is busy, those open connections count as reachable; only an
+    /// empty pool connects.
+    pub async fn ready(&self) -> bool {
+        async fn ping(pool: &PgPool) -> sqlx::Result<()> {
+            match pool.try_acquire() {
+                Some(mut conn) => sqlx::query("SELECT 1").execute(&mut *conn).await.map(drop),
+                None if pool.size() > 0 => Ok(()),
+                None => sqlx::query("SELECT 1").execute(pool).await.map(drop),
+            }
+        }
+        let ping = async {
+            ping(&self.app).await?;
+            ping(&self.reader).await
+        };
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), ping).await,
+            Ok(Ok(()))
+        )
+    }
+
     /// Transaction for the typed tools and ingest. Queries must filter on `user` themselves: nothing in the database
     /// checks it (no RLS), so the signed user settings `reader_tx` needs aren't set here.
     pub async fn app_tx(&self) -> sqlx::Result<Tx> {
