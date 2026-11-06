@@ -147,6 +147,24 @@ async fn validation_errors_reach_the_model() {
     // A source outside the enum is an argument error, not an empty result.
     let typo = serde_json::from_value::<ReadingList>(json!({"kind": "heart_rate", "source": "App"}));
     assert!(typo.unwrap_err().to_string().contains("App"));
+    // Nothing to set: an empty object and an all-null one.
+    for set in [json!({}), json!({"bpm": null})] {
+        let empty = v
+            .reading_update(
+                p(json!({"kind": "heart_rate", "time": "2026-10-01T07:00:00Z", "set": set})),
+                as_user(&a),
+            )
+            .await;
+        assert!(empty.unwrap_err().contains("nothing to update"));
+    }
+    // Half a range, or no selection at all, deletes nothing.
+    for args in [
+        json!({"kind": "heart_rate", "from": "2026-10-01T00:00:00Z"}),
+        json!({"kind": "heart_rate"}),
+    ] {
+        let err = v.reading_delete(p(args), as_user(&a)).await.unwrap_err();
+        assert!(err.contains("give either"), "{err}");
+    }
 }
 
 #[tokio::test]
