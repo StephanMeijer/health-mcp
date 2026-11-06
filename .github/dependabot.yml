@@ -11,5 +11,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Conventional subjects, which release-plz turns into the changelog.
+    commit-message:
+      prefix: "chore(deps)"
     cooldown:
       default-days: 7
