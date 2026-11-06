@@ -259,6 +259,7 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
 | `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored, or were `ecg`/`acc` frames with empty arrays |
 | `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid; nothing was stored |
 | `401` | Missing or bad token, with the RFC 9728 challenge |
+| `408` | Took more than 60 s, including waiting for a free slot; retry (if it did commit, the retry is a no-op) |
 | `413` | Body over 32 MiB after decompression, or more than 5000 frames |
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
 | `500` | Database error; retry |
@@ -309,6 +310,8 @@ Limits (constants in the code):
 - Database pools: 10 connections for `vitals_app`, 5 for `vitals_reader`. A request that waits more than 5 s for a
   connection fails as a transient error: `/mcp` tools return a "retry" tool error, `/api/v1/tools/{name}` returns
   `503`, and `/api/v1/ingest` and `/api/v1/devices` return `500` (which the app retries).
+- Requests: at most 16 `/mcp` and `/api` requests run at once across all users; more wait (bodies unread) until one
+  finishes. A request that takes more than 60 s, waiting included, gets `408`. Discovery and health endpoints are exempt.
 
 ## Known limits
 
