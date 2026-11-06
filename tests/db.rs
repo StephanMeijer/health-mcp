@@ -434,6 +434,15 @@ async fn sleep_and_summary() {
     .await
     .unwrap();
     add_hr(&v, &a, &t(500), 58).await;
+    // A night just outside the 30-day window: in neither the night count nor the stage split.
+    let old = |m: i64| (start - chrono::Duration::days(30) - chrono::Duration::minutes(m)).to_rfc3339();
+    v.sleep_add(
+        p(json!({"start_at": old(480), "end_at": old(0),
+                 "stages": [{"time": old(480), "stage": "awake", "duration_s": 600}]})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
 
     let nights: Value = serde_json::from_str(&v.sleep_list(p(json!({})), as_user(&a)).await.unwrap()).unwrap();
     assert_eq!(nights[0]["hours"], 8.0);
@@ -442,7 +451,11 @@ async fn sleep_and_summary() {
     let s: Value = serde_json::from_str(&v.summary(as_user(&a)).await.unwrap()).unwrap();
     assert_eq!(s["heart_rate"]["latest"]["bpm"], 58);
     assert_eq!(s["sleep"]["nights_30d"], 1);
-    assert_eq!(s["sleep"]["stage_pct_30d"]["light"], 50.0);
+    assert_eq!(
+        s["sleep"]["stage_pct_30d"],
+        json!({"light": 50.0, "deep": 25.0, "rem": 25.0}),
+        "{s}"
+    );
 }
 
 fn session_id(msg: &str) -> String {
