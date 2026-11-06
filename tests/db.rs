@@ -780,9 +780,8 @@ async fn ingest_rejects_unsupported_requests() {
 #[tokio::test]
 async fn app_role_cannot_read_raw_tables() {
     let (_, db, _) = setup().await;
-    let a = uid("alice");
     // The app role may only insert into the raw strap tables, never read them.
-    let mut tx = db.app_tx(&a).await.unwrap();
+    let mut tx = db.app_tx().await.unwrap();
     let err = sqlx::query("SELECT 1 FROM vitals_data.ecg")
         .execute(&mut *tx)
         .await
@@ -1010,7 +1009,7 @@ async fn reading_aggregate_caps_buckets_and_app_queries_time_out() {
     assert_eq!(agg["truncated"], true);
     assert_eq!(agg["buckets"].as_array().unwrap().len(), 1000);
 
-    let mut tx = db.app_tx(&a).await.unwrap();
+    let mut tx = db.app_tx().await.unwrap();
     let timeout: String = sqlx::query_scalar("SHOW statement_timeout")
         .fetch_one(&mut *tx)
         .await

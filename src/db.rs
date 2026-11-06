@@ -30,17 +30,13 @@ pub struct Db {
 }
 
 impl Db {
-    /// Transaction for the typed tools and ingest. Queries must filter on `user` themselves (no RLS).
-    pub async fn app_tx(&self, user: &str) -> sqlx::Result<Tx> {
+    /// Transaction for the typed tools and ingest. Queries must filter on `user` themselves: nothing in the database
+    /// checks it (no RLS), so the signed user settings `reader_tx` needs aren't set here.
+    pub async fn app_tx(&self) -> sqlx::Result<Tx> {
         let mut tx = self.app.begin().await?;
-        sqlx::query(
-            "SELECT set_config('vitals.user_id', $1, true),
-                    set_config('vitals.user_sig', vitals_private.sign($1), true),
-                    set_config('statement_timeout', '30s', true)",
-        )
-        .bind(user)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("SET LOCAL statement_timeout = '30s'")
+            .execute(&mut *tx)
+            .await?;
         Ok(tx)
     }
 
