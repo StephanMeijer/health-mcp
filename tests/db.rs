@@ -4,7 +4,7 @@ use axum::http::{Request, request::Parts};
 use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use vitals_mcp::auth::User;
 use vitals_mcp::db::Db;
 use vitals_mcp::tools::*;
@@ -180,9 +180,9 @@ async fn unknown_fields_are_rejected_not_dropped() {
 
 #[tokio::test]
 async fn imported_readings_are_read_only() {
-    let (v, db, owner) = setup().await;
+    let (v, _, owner) = setup().await;
     let a = uid("alice");
-    // Importers bypass RLS; the owner (superuser in dev) stands in for one.
+    // The owner (superuser in dev) stands in for an importer.
     sqlx::query("INSERT INTO vitals_data.heart_rate VALUES ('2026-10-02T07:00:00Z', $1, 'import', 55, null)")
         .bind(&a)
         .execute(&owner)
@@ -205,19 +205,6 @@ async fn imported_readings_are_read_only() {
         .unwrap();
     assert_eq!(del, "deleted 0 manual heart_rate reading(s)");
 
-    // Even a server bug writing source != 'manual' is stopped by RLS.
-    let mut tx = db.app_tx(&a).await.unwrap();
-    let raw = sqlx::query("UPDATE vitals_data.heart_rate SET bpm = 90 WHERE source = 'import'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(raw.rows_affected(), 0);
-    let ins = sqlx::query("INSERT INTO vitals_data.heart_rate VALUES (now(), $1, 'import', 60, null)")
-        .bind(&a)
-        .execute(&mut *tx)
-        .await;
-    assert!(ins.unwrap_err().to_string().contains("row-level security"));
-
     let rows = sql(&v, &a, "SELECT bpm, source FROM heart_rate").await.unwrap();
     assert_eq!(rows["rows"], json!([{"bpm": 55, "source": "import"}]));
 }
@@ -229,7 +216,7 @@ async fn other_users_rows_are_invisible_and_untouchable() {
     add_hr(&v, &a, "2026-10-03T07:00:00Z", 61).await;
     add_hr(&v, &b, "2026-10-03T08:00:00Z", 99).await;
 
-    // Bob targets alice's reading; the write tools have no user filter of their own, RLS is what stops this.
+    // No RLS: every tool filters on the caller itself. Bob targets alice's reading.
     let upd = v
         .reading_update(
             p(json!({"kind": "heart_rate", "time": "2026-10-03T07:00:00Z", "set": {"bpm": 120}})),
@@ -253,6 +240,84 @@ async fn other_users_rows_are_invisible_and_untouchable() {
         sql(&v, &b, "SELECT bpm FROM heart_rate").await.unwrap()["rows"],
         json!([{"bpm": 99}])
     );
+
+    // The read tools show bob only his own reading.
+    let list: Value = serde_json::from_str(
+        &v.reading_list(
+            p(json!({"kind": "heart_rate", "from": "2026-10-01T00:00:00Z", "to": "2026-10-05T00:00:00Z"})),
+            as_user(&b),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["bpm"], 99);
+    let agg: Value = serde_json::from_str(
+        &v.reading_aggregate(
+            p(json!({"kind": "heart_rate", "field": "bpm",
+                     "from": "2026-10-01T00:00:00Z", "to": "2026-10-05T00:00:00Z"})),
+            as_user(&b),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (&agg["buckets"][0]["n"], &agg["buckets"][0]["max"]),
+        (&json!(1), &json!(99)),
+        "{agg}"
+    );
+    // Alice has a reading and a night inside the summary's 30-day window; bob's summary shows none of it.
+    let _serial = SLEEP_WRITES.lock().await;
+    let ago = |h: i64| (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339();
+    add_hr(&v, &a, &ago(1), 61).await;
+    v.sleep_add(
+        p(json!({"start_at": ago(10), "end_at": ago(2),
+                 "stages": [{"time": ago(10), "stage": "deep", "duration_s": 600}]})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    let summary: Value = serde_json::from_str(&v.summary(as_user(&b)).await.unwrap()).unwrap();
+    assert_eq!(summary["heart_rate"]["latest"]["bpm"], 99, "{summary}");
+    assert_eq!(summary["heart_rate"]["bpm"]["n_30d"], 0, "{summary}");
+    assert_eq!(summary["sleep"]["nights_30d"], 0, "{summary}");
+    assert_eq!(summary["sleep"]["stage_pct_30d"], Value::Null, "{summary}");
+
+    // Alice's sleep: bob can't see, change or delete it.
+    let id = session_id(
+        &v.sleep_add(
+            p(
+                json!({"start_at": "2026-10-03T23:00:00Z", "end_at": "2026-10-04T07:00:00Z",
+                     "stages": [{"time": "2026-10-03T23:00:00Z", "stage": "deep", "duration_s": 600}]}),
+            ),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    );
+    let bobs_nights = v
+        .sleep_list(
+            p(json!({"from": "2026-10-01T00:00:00Z", "to": "2026-10-05T00:00:00Z"})),
+            as_user(&b),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bobs_nights, "[]");
+    let stages = json!({"id": id, "stages": [{"time": "2026-10-04T01:00:00Z", "stage": "rem", "duration_s": 60}]});
+    assert!(v.sleep_update(p(stages), as_user(&b)).await.is_err());
+    assert!(v.sleep_delete(p(json!({ "id": id })), as_user(&b)).await.is_err());
+    let nights: Value = serde_json::from_str(
+        &v.sleep_list(
+            p(json!({"from": "2026-10-01T00:00:00Z", "to": "2026-10-05T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(nights[0]["stage_seconds"], json!({"deep": 600}), "{nights}");
 }
 
 #[tokio::test]
@@ -456,9 +521,9 @@ async fn sleep_round_trip() {
 #[tokio::test]
 async fn imported_sleep_is_read_only() {
     let _serial = SLEEP_WRITES.lock().await;
-    let (v, db, owner) = setup().await;
+    let (v, _, owner) = setup().await;
     let a = uid("alice");
-    // Importers bypass RLS; the owner (superuser in dev) stands in for one.
+    // The owner (superuser in dev) stands in for an importer.
     let id: uuid::Uuid = sqlx::query_scalar(
         "WITH s AS (INSERT INTO vitals_data.sleep_session (user_id, source, start_at, end_at)
                     VALUES ($1, 'import', '2026-10-07T23:00:00Z', '2026-10-08T07:00:00Z') RETURNING id)
@@ -478,31 +543,6 @@ async fn imported_sleep_is_read_only() {
             .is_err()
     );
     assert!(v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.is_err());
-
-    // The tools filter on source themselves; this is what RLS stops if they didn't.
-    let mut tx = db.app_tx(&a).await.unwrap();
-    let raw = sqlx::query("UPDATE vitals_data.sleep_session SET note = 'x' WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(raw.rows_affected(), 0);
-    let raw = sqlx::query("DELETE FROM vitals_data.sleep_stage WHERE session_id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(raw.rows_affected(), 0);
-    let ins = sqlx::query(
-        "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
-         VALUES ('2026-10-08T01:00:00Z', $1, $2, 'rem', 60)",
-    )
-    .bind(&a)
-    .bind(id)
-    .execute(&mut *tx)
-    .await;
-    assert!(ins.unwrap_err().to_string().contains("row-level security"));
-    drop(tx);
 
     assert_eq!(stage_seconds(&v, &a).await, json!({"deep": 1200}));
     let row = sql(&v, &a, "SELECT source, note FROM sleep_session").await.unwrap();
@@ -738,37 +778,10 @@ async fn ingest_rejects_unsupported_requests() {
 }
 
 #[tokio::test]
-async fn app_role_cannot_write_other_sources_or_users() {
+async fn app_role_cannot_read_raw_tables() {
     let (_, db, _) = setup().await;
-    let (a, b) = (uid("alice"), uid("bob"));
-    for (user, source) in [(&a, "import"), (&b, "app")] {
-        let mut tx = db.app_tx(&a).await.unwrap();
-        let err = sqlx::query(
-            "INSERT INTO vitals_data.heart_rate (time, user_id, source, bpm) VALUES (now(), $1, $2::vitals.source, 60)",
-        )
-        .bind(user)
-        .bind(source)
-        .execute(&mut *tx)
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("row-level security"), "{err}");
-    }
-    // The ingest_insert policy itself (store() checks ownership first, so ingest never reaches it with a bad id):
-    // an app heart_rate row needs one of the signed user's devices.
-    let bobs = register(&db, &b, "Polar H10", "B").await;
-    for device in [Some(bobs), None] {
-        let mut tx = db.app_tx(&a).await.unwrap();
-        let err = sqlx::query(
-            "INSERT INTO vitals_data.heart_rate (time, user_id, source, device_id, bpm) VALUES (now(), $1, 'app', $2, 60)",
-        )
-        .bind(&a)
-        .bind(device.map(|d| d as i32))
-        .execute(&mut *tx)
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("row-level security"), "{device:?}: {err}");
-    }
-    // Raw strap tables have no RLS (for compression); the app role may only insert, never read them.
+    let a = uid("alice");
+    // The app role may only insert into the raw strap tables, never read them.
     let mut tx = db.app_tx(&a).await.unwrap();
     let err = sqlx::query("SELECT 1 FROM vitals_data.ecg")
         .execute(&mut *tx)
@@ -828,6 +841,147 @@ async fn ingest_dedups_into_compressed_chunks() {
         post(frame("ecg", 0) + &frame("ecg", 1)).await,
         (200, json!({"frames": 2, "inserted": 1}))
     );
+}
+
+/// Compresses the chunks of `tables` that contain `day` (owner role; tolerates the compression policy racing it).
+async fn compress_day(owner: &PgPool, tables: &[&str], day: &str) {
+    for t in tables {
+        sqlx::query(AssertSqlSafe(format!(
+            "DO $$ DECLARE c regclass; BEGIN
+               FOR c IN SELECT show_chunks('vitals_data.{t}', older_than => '{day}'::timestamptz + interval '8 days',
+                                           newer_than => '{day}'::timestamptz - interval '7 days') LOOP
+                 BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
+                 EXCEPTION WHEN duplicate_object THEN NULL;
+                 END;
+               END LOOP;
+             END $$"
+        )))
+        .execute(owner)
+        .await
+        .unwrap();
+        let compressed: bool = sqlx::query_scalar(
+            "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
+              WHERE hypertable_schema = 'vitals_data' AND hypertable_name = $1
+                AND range_start <= $2::timestamptz AND range_end > $2::timestamptz",
+        )
+        .bind(t)
+        .bind(day)
+        .fetch_one(owner)
+        .await
+        .unwrap();
+        assert!(compressed, "{t}");
+    }
+}
+
+#[tokio::test]
+async fn edits_and_resends_work_on_compressed_chunks() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, db, owner) = setup().await;
+    let a = uid("alice");
+    let d = register(&db, &a, "Polar Loop", "C").await;
+    // A day no other test writes to, so compressing its chunks can't disturb them.
+    let t = "2026-08-20T08:00:00Z";
+    let batch = [
+        json!({"type": "hr", "device_id": d, "time": t, "bpm": 60}),
+        json!({"type": "battery", "device_id": d, "time": t, "level": 80}),
+        json!({"type": "status", "device_id": d, "time": t, "event": "connected"}),
+        json!({"type": "skin_temp", "device_id": d, "time": t, "sample_rate": 1, "celsius": [33.5]}),
+        json!({"type": "sleep", "device_id": d, "start_at": "2026-08-19T23:00:00Z", "end_at": "2026-08-20T07:00:00Z",
+               "stages": [{"time": "2026-08-19T23:00:00Z", "stage": "light", "duration_s": 600}]}),
+    ]
+    .iter()
+    .map(|f| f.to_string() + "\n")
+    .collect::<String>();
+    let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
+    assert_eq!(post(batch.clone()).await, (200, json!({"frames": 5, "inserted": 5})));
+    for (kind, values) in [("heart_rate", json!({"bpm": 61})), ("hrv", json!({"rmssd_ms": 40}))] {
+        let mut r = values;
+        r["time"] = json!("2026-08-20T09:00:00Z");
+        v.reading_add(p(json!({"kind": kind, "readings": [r]})), as_user(&a))
+            .await
+            .unwrap();
+    }
+    let id = session_id(
+        &v.sleep_add(
+            p(
+                json!({"start_at": "2026-08-20T13:00:00Z", "end_at": "2026-08-20T14:00:00Z",
+                     "stages": [{"time": "2026-08-20T13:00:00Z", "stage": "light", "duration_s": 600}]}),
+            ),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    );
+
+    compress_day(
+        &owner,
+        &[
+            "heart_rate",
+            "hrv",
+            "device_battery",
+            "device_event",
+            "skin_temp",
+            "sleep_stage",
+        ],
+        "2026-08-20",
+    )
+    .await;
+
+    // Resends still deduplicate, new frames still land.
+    assert_eq!(post(batch).await, (200, json!({"frames": 5, "inserted": 0})));
+    let new = json!({"type": "hr", "device_id": d, "time": "2026-08-20T08:00:01Z", "bpm": 62}).to_string();
+    assert_eq!(post(new).await, (200, json!({"frames": 1, "inserted": 1})));
+    // A manual row (NULL device_id, a segmentby column) is still unique once compressed.
+    let dup = v
+        .reading_add(
+            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-08-20T09:00:00Z", "bpm": 61}]})),
+            as_user(&a),
+        )
+        .await;
+    assert!(dup.unwrap_err().contains("duplicate key"));
+    // Manual edits still work.
+    v.reading_update(
+        p(json!({"kind": "heart_rate", "time": "2026-08-20T09:00:00Z", "set": {"bpm": 70}})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    let del = v
+        .reading_delete(
+            p(json!({"kind": "hrv", "times": ["2026-08-20T09:00:00Z"]})),
+            as_user(&a),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del, "deleted 1 manual hrv reading(s)");
+    let stages = json!({"id": id, "stages": [{"time": "2026-08-20T13:00:00Z", "stage": "rem", "duration_s": 300}]});
+    v.sleep_update(p(stages), as_user(&a)).await.unwrap();
+
+    let rows = sql(
+        &v,
+        &a,
+        "SELECT (SELECT array_agg(bpm ORDER BY time) FROM heart_rate) AS bpm,
+                (SELECT count(*) FROM hrv) AS hrv,
+                (SELECT array_agg(stage || duration_s ORDER BY time) FROM sleep_stage) AS stages",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rows["rows"][0],
+        json!({"bpm": [60, 62, 70], "hrv": 0, "stages": ["light600", "rem300"]})
+    );
+
+    // sleep_delete cascades into the compressed stages.
+    compress_day(&owner, &["sleep_stage"], "2026-08-20").await;
+    v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap();
+    let left = sql(
+        &v,
+        &a,
+        &format!("SELECT count(*) AS n FROM sleep_stage WHERE session_id = '{id}'"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(left["rows"][0]["n"], 0);
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 # vitals-mcp — v1 spec
 
 A remote MCP server, written in Rust, that stores and queries personal vitals in TimescaleDB.
-It supports multiple users. Each user sees only their own data, and Postgres enforces that (RLS plus signed-user views).
+It supports multiple users. Each user sees only their own data: the untrusted SQL tool through signed-user views that
+Postgres enforces, the typed tools and ingest through a `user_id` filter in every query (no row-level security).
 
 ## Scope
 
@@ -11,7 +12,7 @@ An ingest API for raw tracker frames (e.g. Polar H10 via the vitals-app Android 
 Auth with OAuth 2.1 as a resource server. A Dockerfile.
 
 **Out of scope:** other importers (they write to the DB directly and are trusted to set `user_id` and `source` correctly),
-the IdP itself, Kubernetes manifests, continuous aggregates (they don't support RLS), alerts and a UI.
+the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
 
 ## Stack
 
@@ -106,7 +107,8 @@ recharge       (night date, user_id, source, device_id, status smallint 1..6, an
                 UNIQUE (user_id, source, device_id, night))
 ```
 
-`skin_temp` and `recharge` come from the Polar Loop. They are raw tables like the ones above, but neither is compressed: skin temperature is ~350 KB per day at 1 Hz.
+`skin_temp` and `recharge` come from the Polar Loop. They are raw tables like the ones above; skin temperature is
+~350 KB per day at 1 Hz before compression.
 App sleep goes into `sleep_session`/`sleep_stage` with `source = 'app'` and the session's `device_id`, so `sleep_list` and
 `summary` include it; the write tools still only touch manual sessions.
 
@@ -115,9 +117,23 @@ Strap heart rate goes into `heart_rate` (with `rr_ms`, the beat-to-beat interval
 same instant are two rows, while rows without a device still deduplicate on `(user_id, source, time)` (NULLs compare equal).
 Rows from before migration 0003 (source `polar_h10`) have a `device_id` only if their user had exactly one device.
 
-The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
-with row security). `vitals_app` has only `INSERT` on them, and the server takes `user_id` from the token. The reader
-keeps seeing only its own rows through the `vitals.*` views, which don't depend on RLS.
+No table has row-level security (migration 0007 removed it): TimescaleDB refuses the columnstore on tables with RLS,
+so every hypertable can now be compressed. `vitals_app` has only `INSERT` on the raw tables, and the server takes
+`user_id` from the token. The reader keeps seeing only its own rows through the `vitals.*` views, which never depended
+on RLS.
+
+Every hypertable is compressed with `orderby time` and a `segmentby` equal to its unique key minus `time`, plus
+`user_id` for sleep_stage (TimescaleDB needs the key columns to check uniqueness in compressed chunks); `ecg`/`acc` after 2 hours (below), the rest after
+7 days, once the phone's outbox can no longer resend into them. Late resends and manual edits still work on compressed
+chunks, more slowly.
+
+| table | `compress_segmentby` |
+|---|---|
+| heart_rate, device_battery, device_event, skin_temp, ecg, acc | `user_id, source, device_id` |
+| hrv, blood_pressure, body | `user_id, source` |
+| sleep_stage | `user_id, session_id` |
+
+`sleep_session`, `recharge` and `devices` are plain tables (not hypertables) and stay uncompressed; they're tiny.
 
 `ecg` and `acc` use 1-hour chunks, compressed once older than 2 hours (`segmentby user_id, source, device_id`,
 `orderby time`; `source` must be a segmentby column because it is in the unique key). A late resend from the phone's
@@ -141,7 +157,8 @@ The SQL tool runs SQL from an LLM, so treat that SQL as untrusted (prompt inject
 A plain `SET vitals.user_id = sub` doesn't work, because any query can call `set_config()` and change it.
 The design:
 
-1. **Two login roles.** `vitals_app` handles the typed tools: SELECT, INSERT, UPDATE and DELETE on `vitals_data.*`, under RLS.
+1. **Two login roles.** `vitals_app` handles the typed tools and ingest: SELECT, INSERT, UPDATE and DELETE on the
+   manual tables, INSERT only on the raw tables. No row-level security.
    `vitals_reader` handles the SQL tool: SELECT on the views in schema `vitals` only. Neither role is a member of any
    other role, so `set_config('role', …)` can't escalate. Neither has `BYPASSRLS`. Migrations run as the owner role.
 2. **Signed user id.** The migration creates a random secret in `vitals_private.secret`, which no login role can read.
@@ -149,11 +166,14 @@ The design:
    Per request the server sets the GUCs `vitals.user_id` and `vitals.user_sig` (transaction-local).
    `vitals.current_user_id()` (`SECURITY DEFINER`) checks the HMAC and raises an error if it doesn't match.
    A query can still set a different user id, but it can't produce a valid signature for it.
-3. **`vitals_app`:** RLS policies on `vitals_data.*` with `user_id = vitals.current_user_id()`.
+3. **`vitals_app`:** every query filters on `user_id = $user` itself (the user from the verified token), and writes
+   also on `source = 'manual'`. The database doesn't enforce this, so a query without that filter would leak or change
+   another user's rows. `tests/db.rs` guards it: `other_users_rows_are_invisible_and_untouchable` runs every typed tool
+   as a second user, and those tests fail when a filter is removed.
 4. **`vitals_reader` gets views, never base tables.** Each view is `vitals.<table>`, created `WITH (security_barrier)`
    and filtered on `user_id = vitals.current_user_id()`.
-   Reason (found in testing): TimescaleDB chunks copy the hypertable's *grants* but not its *RLS*. A reader with SELECT
-   on the hypertable could therefore read every user's rows straight from `_timescaledb_internal._hyper_*_chunk`.
+   Reason (found in testing): TimescaleDB chunks copy the hypertable's *grants*. A reader with SELECT on the
+   hypertable could therefore read every user's rows straight from `_timescaledb_internal._hyper_*_chunk`.
    Revoking the TimescaleDB schemas isn't an option, because hypertable queries stop working.
    With no grant on the base tables, chunks and `pg_stats` (which only lists readable columns) show the reader nothing.
 
@@ -187,10 +207,8 @@ Tools that bucket by day also take `tz`, an IANA zone (default `UTC`).
 
 **Write tools touch only `source = 'manual'` rows.** `*_add` always writes `source = 'manual'` (there's no `source` parameter).
 `*_update` and `*_delete` add `AND source = 'manual'` to their SQL, and return "not found" for imported rows.
-This is enforced in the SQL itself, not only in tool validation: the RLS write policies (`INSERT`, `UPDATE` and `DELETE` for
-`vitals_app`) carry `WITH CHECK / USING (source = 'manual')`, so a server bug can't change imported data either.
-Importers connect as their own role and write to `vitals_data.*`. RLS denies a role that matches no policy, so give
-importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
+This is in the SQL of each tool; the database doesn't enforce it (no row-level security).
+Importers connect as their own role and write to `vitals_data.*` (they're trusted to set `user_id` and `source`).
 
 ## Ingest API
 
@@ -245,9 +263,9 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
 | `500` | Database error; retry |
 
-Ingest writes as `vitals_app`. On `heart_rate` and `sleep_session` the `ingest_insert` RLS policy allows only `INSERT` of `source = 'app'`
-rows for the signed user and one of their devices (on `sleep_stage`: only into an app session); the `manual_write` policies are unchanged, so MCP tools still can't modify strap data.
-The raw tables rely on the server instead (see Schema): it checks every frame's `device_id` against the user's devices.
+Ingest writes as `vitals_app`, always with `source = 'app'` and the token's `user_id`. Before inserting, the server checks
+every frame's `device_id` against the user's own devices (`WHERE user_id = $user`); app sleep stages only join app
+sessions of that user. The MCP write tools only touch `source = 'manual'` rows, so they can't modify strap data.
 
 ### Devices
 
@@ -272,8 +290,8 @@ Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/o
 - Two transactions that each insert the first `sleep_stage` rows of a new time range (each creating a TimescaleDB chunk)
   can deadlock (`40P01`): chunk creation copies the foreign key to `sleep_session` and locks it. Postgres aborts one of them;
   importers should retry on `40P01`. Rare in practice: a chunk spans 7 days.
-- The raw tables (`ecg`, `acc`, `device_battery`, `device_event`, `skin_temp`, `recharge`) have no RLS, so compression works. Isolation
-  there rests on the server setting `user_id` from the token; a server bug could write rows under another user.
+- No table has row-level security, so compression works everywhere. Isolation for `vitals_app` rests on the server
+  filtering and setting `user_id` from the token; a server bug could read or write rows of another user.
 - One invalid frame rejects its whole batch (`400`). A client that drops a batch on `400` loses its valid frames too.
   An unknown frame `type` is invalid too, so deploy a server that knows a new type before an app that sends it.
 - App sleep deduplicates on `start_at`: if the tracker later reports a night with a different start, it's a second session.

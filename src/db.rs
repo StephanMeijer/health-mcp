@@ -23,14 +23,14 @@ pub fn reader_pool_options() -> PgPoolOptions {
 
 #[derive(Clone)]
 pub struct Db {
-    /// `vitals_app`: typed tools, RLS on `vitals_data.*`.
+    /// `vitals_app`: typed tools and ingest on `vitals_data.*`; no RLS, every query filters on `user_id` itself.
     pub app: PgPool,
     /// `vitals_reader`: the SQL tool, read-only views in schema `vitals`.
     pub reader: PgPool,
 }
 
 impl Db {
-    /// Transaction for the typed tools; RLS limits it to `user`'s rows (writes: manual rows only).
+    /// Transaction for the typed tools and ingest. Queries must filter on `user` themselves (no RLS).
     pub async fn app_tx(&self, user: &str) -> sqlx::Result<Tx> {
         let mut tx = self.app.begin().await?;
         sqlx::query(

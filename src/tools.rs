@@ -267,7 +267,7 @@ fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Ut
     (from.unwrap_or(to - Duration::days(30)), to)
 }
 
-/// Inserts stages for a session the caller owns (RLS checks the session is manual).
+/// Inserts stages for a session the caller owns: sleep_add just created it, sleep_update matched user and source.
 async fn insert_stages(tx: &mut crate::db::Tx, user: &str, id: Uuid, stages: &[SleepStage]) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
@@ -342,10 +342,11 @@ impl Vitals {
         let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "UPDATE vitals_data.{t} SET ({cols}) = (SELECT {cols} FROM jsonb_populate_record(NULL::vitals_data.{t}, $1))
-             WHERE time = $2 AND source = 'manual'"
+             WHERE user_id = $3 AND time = $2 AND source = 'manual'"
         )))
         .bind(Value::Object(set))
         .bind(p.time)
+        .bind(user)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?
@@ -375,11 +376,12 @@ impl Vitals {
         let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "DELETE FROM vitals_data.{t}
-             WHERE source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3))"
+             WHERE user_id = $4 AND source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3))"
         )))
         .bind(&p.times)
         .bind(range.map(|r| r.0))
         .bind(range.map(|r| r.1))
+        .bind(user)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?
@@ -402,13 +404,14 @@ impl Vitals {
         sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT coalesce(json_agg(to_jsonb(r) - 'user_id' ORDER BY r.time {dir}), '[]')::text FROM (
                SELECT * FROM vitals_data.{t}
-               WHERE time >= $1 AND time < $2 AND ($3::text IS NULL OR source::text = $3)
+               WHERE user_id = $5 AND time >= $1 AND time < $2 AND ($3::text IS NULL OR source::text = $3)
                ORDER BY time {dir} LIMIT $4) r"
         )))
         .bind(from)
         .bind(to)
         .bind(p.source)
         .bind(limit)
+        .bind(user)
         .fetch_one(&mut *tx)
         .await
         .map_err(db_err)
@@ -442,7 +445,8 @@ impl Vitals {
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY {f}) AS p50,
                       percentile_cont(0.9) WITHIN GROUP (ORDER BY {f}) AS p90
                FROM vitals_data.{t}
-               WHERE time >= $3 AND time < $4 AND {f} IS NOT NULL AND ($5::text IS NULL OR source::text = $5)
+               WHERE user_id = $6 AND time >= $3 AND time < $4 AND {f} IS NOT NULL
+                 AND ($5::text IS NULL OR source::text = $5)
                GROUP BY 1 ORDER BY 1 LIMIT {}) b ORDER BY b.bucket",
             MAX_ROWS + 1
         )))
@@ -451,6 +455,7 @@ impl Vitals {
         .bind(from)
         .bind(to)
         .bind(p.source)
+        .bind(user)
         .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
@@ -492,12 +497,13 @@ impl Vitals {
         let n = sqlx::query(
             "UPDATE vitals_data.sleep_session
              SET start_at = coalesce($2, start_at), end_at = coalesce($3, end_at), note = coalesce($4, note)
-             WHERE id = $1 AND source = 'manual'",
+             WHERE id = $1 AND user_id = $5 AND source = 'manual'",
         )
         .bind(p.id)
         .bind(p.start_at)
         .bind(p.end_at)
         .bind(p.note)
+        .bind(user)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?
@@ -506,8 +512,9 @@ impl Vitals {
             return Err(format!("no manual sleep session {}", p.id));
         }
         if let Some(stages) = p.stages {
-            sqlx::query("DELETE FROM vitals_data.sleep_stage WHERE session_id = $1")
+            sqlx::query("DELETE FROM vitals_data.sleep_stage WHERE session_id = $1 AND user_id = $2")
                 .bind(p.id)
+                .bind(user)
                 .execute(&mut *tx)
                 .await
                 .map_err(db_err)?;
@@ -525,12 +532,14 @@ impl Vitals {
     ) -> ToolResult {
         let user = user(&parts)?;
         let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
-        let n = sqlx::query("DELETE FROM vitals_data.sleep_session WHERE id = $1 AND source = 'manual'")
-            .bind(p.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
+        let n =
+            sqlx::query("DELETE FROM vitals_data.sleep_session WHERE id = $1 AND user_id = $2 AND source = 'manual'")
+                .bind(p.id)
+                .bind(user)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?
+                .rows_affected();
         tx.commit().await.map_err(db_err)?;
         match n {
             0 => Err(format!("no manual sleep session {}", p.id)),
@@ -560,11 +569,12 @@ impl Vitals {
                          SELECT time, stage, duration_s FROM vitals_data.sleep_stage WHERE session_id = s.id) g)
                       END AS stages
                FROM vitals_data.sleep_session s
-               WHERE s.start_at >= $1 AND s.start_at < $2) x",
+               WHERE s.user_id = $4 AND s.start_at >= $1 AND s.start_at < $2) x",
         )
         .bind(from)
         .bind(to)
         .bind(p.include_stages)
+        .bind(user)
         .fetch_one(&mut *tx)
         .await
         .map_err(db_err)
@@ -592,8 +602,9 @@ impl Vitals {
                 .join(", ");
             parts_sql.push(format!(
                 "'{t}', (SELECT jsonb_build_object(
-                   'latest', (SELECT to_jsonb(r) - 'user_id' FROM vitals_data.{t} r ORDER BY time DESC LIMIT 1), {stats})
-                 FROM vitals_data.{t} WHERE time > now() - interval '30 days')"
+                   'latest', (SELECT to_jsonb(r) - 'user_id' FROM vitals_data.{t} r WHERE user_id = $1
+                              ORDER BY time DESC LIMIT 1), {stats})
+                 FROM vitals_data.{t} WHERE user_id = $1 AND time > now() - interval '30 days')"
             ));
         }
         let sql = format!(
@@ -603,14 +614,16 @@ impl Vitals {
                  'avg_hours_30d', round(avg(h)::numeric, 2), 'nights_30d', count(*),
                  'stage_pct_30d', (SELECT jsonb_object_agg(stage, pct) FROM (
                     SELECT stage, round(100.0 * sum(duration_s) / sum(sum(duration_s)) OVER (), 1) AS pct
-                    FROM vitals_data.sleep_stage WHERE time > now() - interval '31 days' GROUP BY stage) st))
+                    FROM vitals_data.sleep_stage WHERE user_id = $1 AND time > now() - interval '31 days'
+                    GROUP BY stage) st))
                FROM (SELECT start_at, extract(epoch FROM end_at - start_at) / 3600 AS h
-                     FROM vitals_data.sleep_session WHERE start_at > now() - interval '30 days') s)
+                     FROM vitals_data.sleep_session WHERE user_id = $1 AND start_at > now() - interval '30 days') s)
              )::text",
             parts_sql.join(", ")
         );
         let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
         sqlx::query_scalar(AssertSqlSafe(sql))
+            .bind(user)
             .fetch_one(&mut *tx)
             .await
             .map_err(db_err)
