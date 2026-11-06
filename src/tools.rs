@@ -8,7 +8,7 @@ use rmcp::model::{ContentBlock, Implementation, IntoContents, ServerCapabilities
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sqlx::AssertSqlSafe;
+use sqlx::{AssertSqlSafe, Executor, SqlSafeStr};
 use uuid::Uuid;
 
 use crate::auth::User;
@@ -543,7 +543,7 @@ impl Vitals {
         .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
-        Ok(capped_json(&rows, "buckets"))
+        Ok(capped_json(&rows, "buckets", false))
     }
 
     #[tool(description = "Log a manual sleep session, optionally with stage segments (awake, light, deep, rem).")]
@@ -722,7 +722,7 @@ impl Vitals {
     }
 
     #[tool(
-        description = "Run one read-only SQL query (PostgreSQL + TimescaleDB, e.g. time_bucket, percentile_cont) over your own data. 5 s timeout, at most 1000 rows. Call schema_describe first."
+        description = "Run one read-only SQL query (PostgreSQL + TimescaleDB, e.g. time_bucket, percentile_cont) over your own data. 5 s timeout, at most 1000 rows and 1 MiB. Call schema_describe first."
     )]
     pub async fn sql_query(
         &self,
@@ -732,17 +732,32 @@ impl Vitals {
         let user = user(&parts)?;
         let sql = p.sql.trim().trim_end_matches(';');
         let mut tx = self.db.reader_tx(user).await.map_err(db_err)?;
+        // Postgres parses the bare SQL first: one statement that parses alone has balanced parentheses, quotes and
+        // comments, so it can't close the wrapper below and bypass its caps.
+        (&mut *tx)
+            .prepare(AssertSqlSafe(sql.to_owned()).into_sql_str())
+            .await
+            .map_err(db_err)?;
         // Newline before `)` so a trailing `--` comment can't swallow the wrapper.
         // `t.*`, not `t`: a result column named `t` would otherwise shadow the whole row.
-        let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-            "SELECT row_to_json(t.*)::text FROM (\n{sql}\n) t LIMIT {}",
-            MAX_ROWS + 1
+        // The byte cap runs in Postgres, so an oversized result never reaches this process: rows come back while
+        // their running size is within MAX_SQL_BYTES, then the first row past it as NULL, the truncation marker.
+        let rows: Vec<Option<String>> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT CASE WHEN total <= {cap} THEN j END FROM (
+               SELECT j, n, sum(octet_length(j)) OVER (ORDER BY n) AS total FROM (
+                 SELECT j, row_number() OVER () AS n FROM (
+                   SELECT row_to_json(t.*)::text AS j FROM (\n{sql}\n) t LIMIT {limit}) l) r) s
+             WHERE total - octet_length(j) <= {cap} ORDER BY n LIMIT {limit}",
+            cap = MAX_SQL_BYTES,
+            limit = MAX_ROWS + 1
         )))
         .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
         tx.rollback().await.map_err(db_err)?;
-        Ok(capped_json(&rows, "rows"))
+        let too_big = rows.last().is_some_and(Option::is_none);
+        let rows: Vec<String> = rows.into_iter().flatten().collect();
+        Ok(capped_json(&rows, "rows", too_big))
     }
 }
 
@@ -788,9 +803,13 @@ impl Vitals {
 /// Most rows a tool returns, so one call can't flood the model (a strap writes heart rate every second).
 const MAX_ROWS: usize = 1000;
 
-/// `{"truncated": …, "<key>": [...]}` from JSON rows fetched with `LIMIT MAX_ROWS + 1`.
-fn capped_json(rows: &[String], key: &str) -> String {
-    let truncated = rows.len() > MAX_ROWS;
+/// Most bytes of row JSON `sql_query` returns (same as the `/api` tool body limit).
+const MAX_SQL_BYTES: usize = 1 << 20;
+
+/// `{"truncated": …, "<key>": [...]}` from JSON rows fetched with `LIMIT MAX_ROWS + 1`; `cut` means rows were
+/// already dropped for another limit.
+fn capped_json(rows: &[String], key: &str, cut: bool) -> String {
+    let truncated = cut || rows.len() > MAX_ROWS;
     let rows = &rows[..rows.len().min(MAX_ROWS)];
     format!(r#"{{"truncated":{truncated},"{key}":[{}]}}"#, rows.join(","))
 }

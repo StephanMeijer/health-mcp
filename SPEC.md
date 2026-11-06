@@ -178,8 +178,13 @@ The design:
    With no grant on the base tables, chunks and `pg_stats` (which only lists readable columns) show the reader nothing.
 
 `sql_query` runs like this: `BEGIN`, `SET TRANSACTION READ ONLY`, `SET LOCAL statement_timeout = '5s'`, then the signed GUCs.
-The query runs as one prepared statement wrapped in `SELECT row_to_json(t.*) FROM (…) t LIMIT 1001`
-(so `a; b`, `ROLLBACK; …` and data-modifying CTEs are rejected). At most 1000 rows come back, then `ROLLBACK`.
+Postgres first parses the bare query on its own (prepare, not execute), so `a; b`, `ROLLBACK; …` and any text that does
+not parse as one statement are rejected; a statement that parses alone has balanced parentheses, quotes and comments,
+so it cannot close the wrapper. It then runs as one statement inside `row_to_json(t.*) … FROM (\n…\n) t LIMIT 1001`
+(so data-modifying statements and CTEs are rejected), with a running `sum(octet_length(…))` window around it that keeps
+rows while their total is within 1 MiB, adds one `NULL` marker row if more was cut, and ends in a top-level `LIMIT 1001`.
+At most 1000 rows and 1 MiB of row JSON come back (both caps run in Postgres, so a larger result never reaches the
+server), then `ROLLBACK`. Either cap sets `truncated`.
 The typed tools run as `vitals_app` with `statement_timeout = '30s'` per transaction (ingest too).
 
 **Isolation tests** (`tests/db.rs`, all passing). User A tries to read or change user B's rows through each of these,
