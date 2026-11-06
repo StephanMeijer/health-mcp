@@ -251,8 +251,10 @@ fn user(parts: &Parts) -> Result<&str, String> {
         .ok_or_else(|| "unauthenticated".into())
 }
 
-/// What a transient database failure (deadlock, serialization failure) returns; the app gets `503` for it.
+/// What a transient database failure (deadlock, restart, overload) returns; the app gets `503` for it.
 pub const RETRY: &str = "temporarily unavailable, retry";
+/// What any other server-side failure returns; the app gets `500` for it.
+pub const INTERNAL: &str = "internal error";
 
 /// Database messages (CHECK violations, SQL errors in sql_query) are useful to the model; anything else is internal.
 fn db_err(e: sqlx::Error) -> String {
@@ -264,15 +266,20 @@ fn db_err(e: sqlx::Error) -> String {
         sqlx::Error::Database(d) => d.message().to_owned(),
         e => {
             tracing::error!("database error: {e}");
-            "internal error".into()
+            INTERNAL.into()
         }
     }
 }
 
-/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock), except 40002, a constraint
-/// violation that a retry repeats. 57014 (sql_query's statement timeout) stays the caller's error.
+/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock) except 40002, a constraint
+/// violation that a retry repeats; 08 (connection lost); 53 (too many connections, out of memory or disk); and
+/// 57P01–57P03 (server shutting down or starting up, as in a restart or failover).
+/// 57014 (sql_query's statement timeout) stays the caller's error.
 fn retryable(code: &str) -> bool {
-    code.starts_with("40") && code != "40002"
+    (code.starts_with("40") && code != "40002")
+        || code.starts_with("08")
+        || code.starts_with("53")
+        || matches!(code, "57P01" | "57P02" | "57P03")
 }
 
 fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -797,8 +804,12 @@ mod tests {
     }
 
     #[test]
-    fn only_transaction_rollbacks_are_retryable() {
-        assert!(retryable("40001") && retryable("40P01"));
-        assert!(!retryable("40002") && !retryable("57014") && !retryable("23514"));
+    fn transient_errors_are_retryable() {
+        for code in ["40001", "40P01", "08006", "53300", "53200", "57P01", "57P03"] {
+            assert!(retryable(code), "{code}");
+        }
+        for code in ["40002", "57014", "23514", "42601", "22P02"] {
+            assert!(!retryable(code), "{code}");
+        }
     }
 }
