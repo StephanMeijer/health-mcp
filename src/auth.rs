@@ -19,7 +19,7 @@ pub struct User(pub String);
 
 pub struct Verifier {
     issuer: String,
-    /// Our canonical MCP URL; also the required `aud`.
+    /// The protected resource (`PUBLIC_URL` + `/mcp` or `/api`); also the required `aud`.
     resource: String,
     jwks_uri: String,
     http: reqwest::Client,
@@ -134,7 +134,7 @@ async fn fetch_jwks(http: &reqwest::Client, uri: &str) -> reqwest::Result<JwkSet
     http.get(uri).send().await?.error_for_status()?.json().await
 }
 
-/// Axum middleware for `/mcp`: 401 with RFC 9728 discovery, or inserts [`User`].
+/// Axum middleware for `/mcp` and `/api` (one `Verifier` each): 401 with RFC 9728 discovery, or inserts [`User`].
 pub async fn require(State(v): State<Arc<Verifier>>, mut req: Request, next: Next) -> Response {
     let token = req
         .headers()
