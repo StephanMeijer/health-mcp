@@ -345,6 +345,24 @@ async fn measurements_are_one_row_per_value() {
 }
 
 #[tokio::test]
+async fn summary_keeps_measurement_types_apart() {
+    let (v, _, _) = setup().await;
+    let a = uid("alice");
+    let t = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    for (kind, value) in [("weight", 80.5), ("waist", 84.0)] {
+        v.reading_add(
+            p(json!({"kind": kind, "readings": [{"time": t, "value": value}]})),
+            as_user(&a),
+        )
+        .await
+        .unwrap();
+    }
+    let s: Value = serde_json::from_str(&v.summary(as_user(&a)).await.unwrap()).unwrap();
+    assert_eq!(s["weight"]["value"]["avg_30d"], 80.5, "{s}");
+    assert_eq!(s["waist"]["value"]["avg_30d"], 84.0, "{s}");
+}
+
+#[tokio::test]
 async fn imported_readings_are_read_only() {
     let (v, _, owner) = setup().await;
     let a = uid("alice");
@@ -1122,7 +1140,11 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     .collect::<String>();
     let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
     assert_eq!(post(batch.clone()).await, (200, json!({"frames": 5, "inserted": 5})));
-    for (kind, values) in [("heart_rate", json!({"bpm": 61})), ("hrv", json!({"rmssd_ms": 40}))] {
+    for (kind, values) in [
+        ("heart_rate", json!({"bpm": 61})),
+        ("hrv", json!({"rmssd_ms": 40})),
+        ("weight", json!({"value": 80})),
+    ] {
         let mut r = values;
         r["time"] = json!("2026-09-27T09:00:00Z");
         v.reading_add(p(json!({"kind": kind, "readings": [r]})), as_user(&a))
@@ -1146,6 +1168,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         &[
             "heart_rate",
             "hrv",
+            "measurement",
             "device_battery",
             "device_event",
             "skin_temp",
@@ -1182,6 +1205,19 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         .await
         .unwrap();
     assert_eq!(del, json!({"deleted": 1, "kind": "hrv"}).to_string());
+    // The range trigger still guards a compressed measurement; edits within range go through.
+    let weight = |value: i32| json!({"kind": "weight", "time": "2026-09-27T09:00:00Z", "set": {"value": value}});
+    let too_heavy = v.reading_update(p(weight(900)), as_user(&a)).await.unwrap_err();
+    assert!(too_heavy.to_string().contains("outside"), "{too_heavy}");
+    v.reading_update(p(weight(81)), as_user(&a)).await.unwrap();
+    let del = v
+        .reading_delete(
+            p(json!({"kind": "weight", "times": ["2026-09-27T09:00:00Z"]})),
+            as_user(&a),
+        )
+        .await
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&del).unwrap()["deleted"], 1);
     let stages = json!({"id": id, "stages": [{"time": "2026-09-27T13:00:00Z", "stage": "rem", "duration_s": 300}]});
     v.sleep_update(p(stages), as_user(&a)).await.unwrap();
 

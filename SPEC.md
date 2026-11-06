@@ -66,11 +66,13 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
 
 ## Schema
 
-All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
+All times are `timestamptz`. Units are fixed in column names, except in `measurement`, whose `unit` column is pinned per type by
+`measurement_type`. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
 describe what they read with a `devices` row, so new importers need no new enum value).
 Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source vitals.source NOT NULL`, plus a
-natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exception is
-`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`: target that with `ON CONFLICT`.
+natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exceptions are
+`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`, and `measurement`, keyed
+`UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, type, time)`: target those with `ON CONFLICT`.
 
 ```sql
 heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[], device_id int → devices,
