@@ -251,8 +251,10 @@ fn user(parts: &Parts) -> Result<&str, String> {
         .ok_or_else(|| "unauthenticated".into())
 }
 
-/// What a transient database failure (deadlock, serialization failure) returns; the app gets `503` for it.
+/// What a transient database failure (deadlock, restart, overload) returns; the app gets `503` for it.
 pub const RETRY: &str = "temporarily unavailable, retry";
+/// What any other server-side failure returns; the app gets `500` for it.
+pub const INTERNAL: &str = "internal error";
 
 /// Database messages (CHECK violations, SQL errors in sql_query) are useful to the model; anything else is internal.
 fn db_err(e: sqlx::Error) -> String {
@@ -262,17 +264,29 @@ fn db_err(e: sqlx::Error) -> String {
             RETRY.into()
         }
         sqlx::Error::Database(d) => d.message().to_owned(),
+        // Every connection busy: nothing ran, so trying again is safe.
+        sqlx::Error::PoolTimedOut => {
+            tracing::warn!("database pool timed out");
+            RETRY.into()
+        }
         e => {
             tracing::error!("database error: {e}");
-            "internal error".into()
+            INTERNAL.into()
         }
     }
 }
 
-/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock), except 40002, a constraint
-/// violation that a retry repeats. 57014 (sql_query's statement timeout) stays the caller's error.
+/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock) except 40002, a constraint
+/// violation that a retry repeats; connection lost (08000, 08003, 08006); too many connections (53300) or disk full
+/// (53100); and 57P01–57P03 (server shutting down or starting up, as in a restart or failover). Not the rest of 08
+/// and 53: a protocol violation (08P01), out of memory (53200) or a temp file limit (53400) fails the same way again.
+/// 57014 (sql_query's statement timeout) stays the caller's error.
 fn retryable(code: &str) -> bool {
-    code.starts_with("40") && code != "40002"
+    (code.starts_with("40") && code != "40002")
+        || matches!(
+            code,
+            "08000" | "08003" | "08006" | "53300" | "53100" | "57P01" | "57P02" | "57P03"
+        )
 }
 
 fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -797,8 +811,12 @@ mod tests {
     }
 
     #[test]
-    fn only_transaction_rollbacks_are_retryable() {
-        assert!(retryable("40001") && retryable("40P01"));
-        assert!(!retryable("40002") && !retryable("57014") && !retryable("23514"));
+    fn transient_errors_are_retryable() {
+        for code in ["40001", "40P01", "08006", "53300", "53100", "57P01", "57P03"] {
+            assert!(retryable(code), "{code}");
+        }
+        for code in ["40002", "57014", "23514", "42601", "22P02", "08P01", "53200", "53400"] {
+            assert!(!retryable(code), "{code}");
+        }
     }
 }

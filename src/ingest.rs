@@ -541,7 +541,7 @@ async fn call_tool(
         None => StatusCode::NOT_FOUND.into_response(),
         // Tools return JSON text, or a plain message for writes ("added 3 heart_rate reading(s)").
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),
-        Some(Err(e)) if e == "internal error" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Some(Err(e)) if e == crate::tools::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Some(Err(e)) if e == crate::tools::RETRY => {
             (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response()
         }
