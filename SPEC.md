@@ -6,7 +6,8 @@ Postgres enforces, the typed tools and ingest through a `user_id` filter in ever
 
 ## Scope
 
-**In scope:** heart rate, HRV, blood pressure, body metrics (weight, body fat, SpO2, temperature) and sleep.
+**In scope:** heart rate, HRV, body measurements (weight, body fat, height, waist, hip, neck, scale composition, SpO2,
+temperature, glucose, blood pressure) and sleep.
 Manual logging and correction through MCP tools. Typed query tools and a read-only SQL tool.
 An ingest API for raw tracker frames (e.g. Polar H10 via the vitals-app Android app), with a per-user device registry.
 Auth with OAuth 2.1 as a resource server. A Dockerfile.
@@ -65,20 +66,22 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
 
 ## Schema
 
-All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
+All times are `timestamptz`. Units are fixed in column names, except in `measurement`, whose `unit` column is pinned per type by
+`measurement_type`. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
 describe what they read with a `devices` row, so new importers need no new enum value).
 Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source vitals.source NOT NULL`, plus a
-natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exception is
-`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`: target that with `ON CONFLICT`.
+natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exceptions are
+`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`, and `measurement`, keyed
+`UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, type, time)`: target those with `ON CONFLICT`.
 
 ```sql
 heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[], device_id int → devices,
                 UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time))
 hrv            (time, user_id, source, rmssd_ms real NOT NULL, note text)
-blood_pressure (time, user_id, source, systolic smallint NOT NULL, diastolic smallint NOT NULL,
-                pulse smallint, note text)
-body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note text,
-                CHECK (num_nonnulls(weight_kg, fat_pct, spo2_pct, temp_c) > 0))
+measurement    (time, user_id, source, device_id int → devices, type text, value real NOT NULL, unit text,
+                note text, FOREIGN KEY (type, unit) → measurement_type (name, unit),
+                UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, type, time))   -- one row per value
+measurement_type (name text PK, unit text, min real, max real)   -- plain table; a trigger keeps value in [min, max]
 
 sleep_session  (id uuid PK, user_id, source, start_at, end_at, note text, device_id int → devices,
                 UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, start_at), CHECK (end_at > start_at))   -- plain table
@@ -130,7 +133,8 @@ chunks, more slowly.
 | table | `compress_segmentby` |
 |---|---|
 | heart_rate, device_battery, device_event, skin_temp, ecg, acc | `user_id, source, device_id` |
-| hrv, blood_pressure, body | `user_id, source` |
+| hrv | `user_id, source` |
+| measurement | `user_id, source, device_id, type` |
 | sleep_stage | `user_id, session_id` |
 
 `sleep_session`, `recharge` and `devices` are plain tables (not hypertables) and stay uncompressed; they're tiny.
@@ -194,7 +198,11 @@ signature, and the write tools aimed at another user's row.
 
 ## MCP tools
 
-The `kind` parameter takes one of `heart_rate | hrv | blood_pressure | body`. Times are RFC 3339.
+The `kind` parameter takes `heart_rate` (field `bpm`), `hrv` (`rmssd_ms`), or a `measurement_type` name with field
+`value` in that type's unit (migration 0008): `weight`, `muscle_mass`, `bone_mass` kg; `body_fat`, `body_water`, `spo2` %;
+`height`, `waist`, `hip`, `neck` cm; `visceral_fat` level; `temperature` °C; `glucose` mmol/L; `systolic`,
+`diastolic` mmHg; `pulse` bpm. Blood pressure is a `systolic` and a `diastolic` reading at the same time. A new
+type is a row in `measurement_type` plus a `Kind` variant. Times are RFC 3339.
 Tools that bucket by day also take `tz`, an IANA zone (default `UTC`).
 
 | Tool | Purpose |

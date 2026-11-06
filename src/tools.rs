@@ -55,32 +55,108 @@ impl IntoContents for ToolError {
     }
 }
 
+/// What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type
+/// (migration 0008) with one `value` in a fixed unit.
 #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     HeartRate,
     Hrv,
-    BloodPressure,
-    Body,
+    Weight,
+    BodyFat,
+    Height,
+    Waist,
+    Hip,
+    Neck,
+    MuscleMass,
+    BoneMass,
+    BodyWater,
+    VisceralFat,
+    Spo2,
+    Temperature,
+    Glucose,
+    Systolic,
+    Diastolic,
+    Pulse,
 }
 
-const KINDS: [Kind; 4] = [Kind::HeartRate, Kind::Hrv, Kind::BloodPressure, Kind::Body];
+const KINDS: [Kind; 18] = [
+    Kind::HeartRate,
+    Kind::Hrv,
+    Kind::Weight,
+    Kind::BodyFat,
+    Kind::Height,
+    Kind::Waist,
+    Kind::Hip,
+    Kind::Neck,
+    Kind::MuscleMass,
+    Kind::BoneMass,
+    Kind::BodyWater,
+    Kind::VisceralFat,
+    Kind::Spo2,
+    Kind::Temperature,
+    Kind::Glucose,
+    Kind::Systolic,
+    Kind::Diastolic,
+    Kind::Pulse,
+];
 
 impl Kind {
-    fn table(self) -> &'static str {
+    /// The kind's name as callers write it; for measurement kinds also the `measurement.type`.
+    fn name(self) -> &'static str {
         match self {
             Kind::HeartRate => "heart_rate",
             Kind::Hrv => "hrv",
-            Kind::BloodPressure => "blood_pressure",
-            Kind::Body => "body",
+            Kind::Weight => "weight",
+            Kind::BodyFat => "body_fat",
+            Kind::Height => "height",
+            Kind::Waist => "waist",
+            Kind::Hip => "hip",
+            Kind::Neck => "neck",
+            Kind::MuscleMass => "muscle_mass",
+            Kind::BoneMass => "bone_mass",
+            Kind::BodyWater => "body_water",
+            Kind::VisceralFat => "visceral_fat",
+            Kind::Spo2 => "spo2",
+            Kind::Temperature => "temperature",
+            Kind::Glucose => "glucose",
+            Kind::Systolic => "systolic",
+            Kind::Diastolic => "diastolic",
+            Kind::Pulse => "pulse",
+        }
+    }
+    /// The unit of a measurement kind, as in `measurement_type`; `None` for kinds with their own table.
+    fn unit(self) -> Option<&'static str> {
+        match self {
+            Kind::HeartRate | Kind::Hrv => None,
+            Kind::Weight | Kind::MuscleMass | Kind::BoneMass => Some("kg"),
+            Kind::BodyFat | Kind::BodyWater | Kind::Spo2 => Some("%"),
+            Kind::Height | Kind::Waist | Kind::Hip | Kind::Neck => Some("cm"),
+            Kind::VisceralFat => Some("level"),
+            Kind::Temperature => Some("°C"),
+            Kind::Glucose => Some("mmol/L"),
+            Kind::Systolic | Kind::Diastolic => Some("mmHg"),
+            Kind::Pulse => Some("bpm"),
+        }
+    }
+    fn table(self) -> &'static str {
+        match self.unit() {
+            Some(_) => "measurement",
+            None => self.name(),
         }
     }
     fn fields(self) -> &'static [&'static str] {
         match self {
             Kind::HeartRate => &["bpm"],
             Kind::Hrv => &["rmssd_ms"],
-            Kind::BloodPressure => &["systolic", "diastolic", "pulse"],
-            Kind::Body => &["weight_kg", "fat_pct", "spo2_pct", "temp_c"],
+            _ => &["value"],
+        }
+    }
+    /// SQL appended to a WHERE on `table()`: measurement kinds share one table. The name is a fixed string.
+    fn filter(self) -> String {
+        match self.unit() {
+            Some(_) => format!(" AND type = '{}'", self.name()),
+            None => String::new(),
         }
     }
 }
@@ -111,20 +187,9 @@ pub struct Values {
     pub bpm: Option<i32>,
     /// hrv: RMSSD in milliseconds.
     pub rmssd_ms: Option<f64>,
-    /// blood_pressure: systolic mmHg.
-    pub systolic: Option<i32>,
-    /// blood_pressure: diastolic mmHg.
-    pub diastolic: Option<i32>,
-    /// blood_pressure: pulse in bpm (optional).
-    pub pulse: Option<i32>,
-    /// body: weight in kg (convert lb → kg).
-    pub weight_kg: Option<f64>,
-    /// body: body fat percentage.
-    pub fat_pct: Option<f64>,
-    /// body: blood oxygen saturation percentage.
-    pub spo2_pct: Option<f64>,
-    /// body: temperature in °C (convert °F → °C).
-    pub temp_c: Option<f64>,
+    /// Every kind except heart_rate and hrv: the value in the kind's unit (convert lb → kg, in → cm, °F → °C,
+    /// mg/dL → mmol/L by dividing by 18).
+    pub value: Option<f64>,
     /// Free-text note.
     pub note: Option<String>,
     /// Anything else the caller sent. Rejected in `to_object`: serde would otherwise drop a misspelled
@@ -141,7 +206,7 @@ impl Values {
             return Err(format!(
                 "unknown field(s) {:?} (allowed for kind '{}': {:?})",
                 self.unknown.keys().collect::<Vec<_>>(),
-                kind.table(),
+                kind.name(),
                 kind.fields()
             ));
         }
@@ -152,7 +217,7 @@ impl Values {
         if let Some(bad) = m.keys().find(|k| *k != "note" && !kind.fields().contains(&k.as_str())) {
             return Err(format!(
                 "field '{bad}' does not belong to kind '{}' (allowed: {:?})",
-                kind.table(),
+                kind.name(),
                 kind.fields()
             ));
         }
@@ -218,7 +283,7 @@ pub struct ReadingList {
 #[serde(deny_unknown_fields)]
 pub struct ReadingAggregate {
     pub kind: Kind,
-    /// Field to aggregate, e.g. "bpm", "systolic", "weight_kg".
+    /// Field to aggregate: "bpm" for heart_rate, "rmssd_ms" for hrv, "value" for every other kind.
     pub field: String,
     /// Bucket width as a Postgres interval, e.g. "1 day", "1 week", "1 hour". Default "1 day".
     pub bucket: Option<String>,
@@ -374,7 +439,7 @@ impl Vitals {
     }
 
     #[tool(
-        description = "Log 1–1000 manual readings of one kind (heart_rate, hrv, blood_pressure, body). Units: bpm, ms, mmHg, kg, %, °C."
+        description = "Log 1–1000 manual readings of one kind. heart_rate takes `bpm`, hrv `rmssd_ms`; every other kind takes `value` in a fixed unit: weight, muscle_mass, bone_mass kg; body_fat, body_water, spo2 %; height, waist, hip, neck cm; visceral_fat level; temperature °C; glucose mmol/L; systolic, diastolic mmHg; pulse bpm. Blood pressure is two readings (systolic, diastolic) at the same time, plus pulse if measured."
     )]
     pub async fn reading_add(
         &self,
@@ -391,6 +456,10 @@ impl Vitals {
             m.insert("time".into(), r.time.to_rfc3339().into());
             m.insert("user_id".into(), user.into());
             m.insert("source".into(), "manual".into());
+            if let Some(unit) = p.kind.unit() {
+                m.insert("type".into(), p.kind.name().into());
+                m.insert("unit".into(), unit.into());
+            }
             rows.push(Value::Object(m));
         }
         let t = p.kind.table();
@@ -404,7 +473,7 @@ impl Vitals {
         .map_err(db_err)?
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
-        Ok(json!({"added": n, "kind": t}).to_string())
+        Ok(json!({"added": n, "kind": p.kind.name()}).to_string())
     }
 
     #[tool(
@@ -422,11 +491,11 @@ impl Vitals {
         }
         // Column names come from Kind::fields (validated above), never from free text.
         let cols = set.keys().cloned().collect::<Vec<_>>().join(", ");
-        let t = p.kind.table();
+        let (t, filter) = (p.kind.table(), p.kind.filter());
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "UPDATE vitals_data.{t} SET ({cols}) = (SELECT {cols} FROM jsonb_populate_record(NULL::vitals_data.{t}, $1))
-             WHERE user_id = $3 AND time = $2 AND source = 'manual'"
+             WHERE user_id = $3 AND time = $2 AND source = 'manual'{filter}"
         )))
         .bind(Value::Object(set))
         .bind(p.time)
@@ -437,8 +506,8 @@ impl Vitals {
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
         match n {
-            0 => Err(format!("no manual {t} reading at {}", p.time.to_rfc3339()).into()),
-            _ => Ok(json!({"updated": 1, "kind": t, "time": p.time}).to_string()),
+            0 => Err(format!("no manual {} reading at {}", p.kind.name(), p.time.to_rfc3339()).into()),
+            _ => Ok(json!({"updated": 1, "kind": p.kind.name(), "time": p.time}).to_string()),
         }
     }
 
@@ -456,11 +525,11 @@ impl Vitals {
             (None, None) if !p.times.is_empty() => None,
             _ => return Err("give either `times`, or both `from` and `to`".into()),
         };
-        let t = p.kind.table();
+        let (t, filter) = (p.kind.table(), p.kind.filter());
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "DELETE FROM vitals_data.{t}
-             WHERE user_id = $4 AND source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3))"
+             WHERE user_id = $4 AND source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3)){filter}"
         )))
         .bind(&p.times)
         .bind(range.map(|r| r.0))
@@ -471,7 +540,7 @@ impl Vitals {
         .map_err(db_err)?
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
-        Ok(json!({"deleted": n, "kind": t}).to_string())
+        Ok(json!({"deleted": n, "kind": p.kind.name()}).to_string())
     }
 
     #[tool(description = "List raw readings of one kind in a time range (default: last 30 days), newest first.")]
@@ -483,12 +552,16 @@ impl Vitals {
         let user = user(&parts)?;
         let (from, to) = range(p.from, p.to);
         let limit = p.limit.unwrap_or(100).clamp(1, 1000);
-        let (t, dir) = (p.kind.table(), if p.oldest_first { "ASC" } else { "DESC" });
+        let (t, filter, dir) = (
+            p.kind.table(),
+            p.kind.filter(),
+            if p.oldest_first { "ASC" } else { "DESC" },
+        );
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
         sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT coalesce(json_agg(to_jsonb(r) - 'user_id' ORDER BY r.time {dir}), '[]')::text FROM (
                SELECT * FROM vitals_data.{t}
-               WHERE user_id = $5 AND time >= $1 AND time < $2 AND ($3::text IS NULL OR source::text = $3)
+               WHERE user_id = $5 AND time >= $1 AND time < $2 AND ($3::text IS NULL OR source::text = $3){filter}
                ORDER BY time {dir} LIMIT $4) r"
         )))
         .bind(from)
@@ -514,12 +587,12 @@ impl Vitals {
             format!(
                 "field '{}' does not belong to kind '{}' (allowed: {:?})",
                 p.field,
-                p.kind.table(),
+                p.kind.name(),
                 p.kind.fields()
             )
         })?;
         let (from, to) = range(p.from, p.to);
-        let t = p.kind.table();
+        let (t, filter) = (p.kind.table(), p.kind.filter());
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT row_to_json(b)::text FROM (
@@ -530,7 +603,7 @@ impl Vitals {
                       percentile_cont(0.9) WITHIN GROUP (ORDER BY {f}) AS p90
                FROM vitals_data.{t}
                WHERE user_id = $6 AND time >= $3 AND time < $4 AND {f} IS NOT NULL
-                 AND ($5::text IS NULL OR source::text = $5)
+                 AND ($5::text IS NULL OR source::text = $5){filter}
                GROUP BY 1 ORDER BY 1 LIMIT {}) b ORDER BY b.bucket",
             MAX_ROWS + 1
         )))
@@ -671,7 +744,7 @@ impl Vitals {
         let user = user(&parts)?;
         let mut parts_sql = Vec::new();
         for k in KINDS {
-            let t = k.table();
+            let (name, t, filter) = (k.name(), k.table(), k.filter());
             let stats = k
                 .fields()
                 .iter()
@@ -685,10 +758,10 @@ impl Vitals {
                 .collect::<Vec<_>>()
                 .join(", ");
             parts_sql.push(format!(
-                "'{t}', (SELECT jsonb_build_object(
-                   'latest', (SELECT to_jsonb(r) - 'user_id' FROM vitals_data.{t} r WHERE user_id = $1
+                "'{name}', (SELECT jsonb_build_object(
+                   'latest', (SELECT to_jsonb(r) - 'user_id' FROM vitals_data.{t} r WHERE user_id = $1{filter}
                               ORDER BY time DESC LIMIT 1), {stats})
-                 FROM vitals_data.{t} WHERE user_id = $1 AND time > now() - interval '30 days')"
+                 FROM vitals_data.{t} WHERE user_id = $1{filter} AND time > now() - interval '30 days')"
             ));
         }
         let sql = format!(
@@ -818,8 +891,10 @@ const SCHEMA_DOC: &str = r#"Views (only your own rows are visible; times are tim
 
 heart_rate     (time, user_id, source, bpm smallint, note, rr_ms smallint[], device_id)  -- rr_ms: beat-to-beat intervals (chest strap only)
 hrv            (time, user_id, source, rmssd_ms real, note)            -- RMSSD in ms
-blood_pressure (time, user_id, source, systolic smallint, diastolic smallint, pulse smallint, note)  -- mmHg, bpm
-body           (time, user_id, source, weight_kg real, fat_pct real, spo2_pct real, temp_c real, note)  -- any subset non-null
+measurement    (time, user_id, source, device_id, type text, value real, unit text, note)  -- one row per value
+measurement_type (name, unit, min, max)  -- every type with its one unit and plausible range:
+               -- weight, muscle_mass, bone_mass kg; body_fat, body_water, spo2 %; height, waist, hip, neck cm;
+               -- visceral_fat level; temperature °C; glucose mmol/L; systolic, diastolic mmHg; pulse bpm
 sleep_session  (id uuid, user_id, source, start_at, end_at, note, device_id)
 sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'light'|'deep'|'rem', duration_s int)
 
@@ -844,8 +919,14 @@ Examples:
 -- daily average and max heart rate, Amsterdam days
 SELECT time_bucket('1 day', time, 'Europe/Amsterdam') AS day, avg(bpm), max(bpm) FROM heart_rate
 WHERE time > now() - interval '30 days' GROUP BY 1 ORDER BY 1;
--- blood pressure readings at or above 140/90
-SELECT time, systolic, diastolic FROM blood_pressure WHERE systolic >= 140 OR diastolic >= 90 ORDER BY time DESC;
+-- blood pressure readings at or above 140/90 (systolic and diastolic are rows with the same time)
+SELECT time, max(value) FILTER (WHERE type = 'systolic') AS sys, max(value) FILTER (WHERE type = 'diastolic') AS dia
+FROM measurement WHERE type IN ('systolic', 'diastolic') GROUP BY time
+HAVING max(value) FILTER (WHERE type = 'systolic') >= 140 OR max(value) FILTER (WHERE type = 'diastolic') >= 90 ORDER BY time DESC;
+-- waist-to-height ratio per day both were measured
+SELECT w.time::date, round((w.value / h.value)::numeric, 2) FROM measurement w
+JOIN LATERAL (SELECT value FROM measurement WHERE type = 'height' AND time <= w.time ORDER BY time DESC LIMIT 1) h ON true
+WHERE w.type = 'waist' ORDER BY 1;
 -- deep sleep minutes per night
 SELECT s.start_at::date AS night, sum(g.duration_s) / 60 AS deep_min FROM sleep_session s
 JOIN sleep_stage g ON g.session_id = s.id AND g.stage = 'deep' GROUP BY 1 ORDER BY 1;
@@ -863,10 +944,11 @@ impl ServerHandler for Vitals {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).with_instructions(
-            "Personal vitals log: heart rate, HRV, blood pressure, body (weight, fat %, SpO2, temperature) and sleep. \
+            "Personal vitals log: heart rate, HRV, body measurements (weight, body fat, height, waist, blood pressure, \
+             glucose, …) and sleep. \
              Use summary for an overview, reading_list/reading_aggregate/sleep_list for typed queries, and \
              schema_describe + sql_query for anything else. Write tools only change readings logged manually \
-             (source 'manual'); imported readings are read-only. Convert lb to kg and °F to °C before logging.",
+             (source 'manual'); imported readings are read-only. Convert lb to kg, in to cm, °F to °C and mg/dL to mmol/L before logging.",
         )
     }
 }
