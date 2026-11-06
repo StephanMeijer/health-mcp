@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.2...v0.4.3) - 2026-11-06
+
+### Fixed
+
+- *(api)* treat database restarts and overload as retryable ([#48](https://github.com/StephanMeijer/vitals-mcp/pull/48))
+
+### Other
+
+- pin timescaledb to 2.31.0-pg17 ([#51](https://github.com/StephanMeijer/vitals-mcp/pull/51))
+- run the advisory audit weekly and update cargo deps with dependabot ([#50](https://github.com/StephanMeijer/vitals-mcp/pull/50))
+- *(api)* every listed tool is callable over /api ([#49](https://github.com/StephanMeijer/vitals-mcp/pull/49))
+- *(deps)* update rmcp to 3.9 and lockfile patches ([#54](https://github.com/StephanMeijer/vitals-mcp/pull/54))
+- *(db)* drop the unused signed user settings from app transactions
+- *(auth)* note that the verifier and middleware also guard /api
+
 ## [0.4.2](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.1...v0.4.2) - 2026-11-06
 
 ### Added
