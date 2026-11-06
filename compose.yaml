@@ -1,7 +1,7 @@
-# Dev/test database only. Production runs TimescaleDB elsewhere.
+# Dev/test database only. Production runs TimescaleDB elsewhere; keep this tag (and ci.yml's) at its version.
 services:
   db:
-    image: timescale/timescaledb:latest-pg17
+    image: timescale/timescaledb:2.31.0-pg17
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: vitals
