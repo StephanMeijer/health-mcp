@@ -644,7 +644,8 @@ impl Vitals {
                  'avg_hours_30d', round(avg(h)::numeric, 2), 'nights_30d', count(*),
                  'stage_pct_30d', (SELECT jsonb_object_agg(stage, pct) FROM (
                     SELECT stage, round(100.0 * sum(duration_s) / sum(sum(duration_s)) OVER (), 1) AS pct
-                    FROM vitals_data.sleep_stage WHERE user_id = $1 AND time > now() - interval '31 days'
+                    FROM vitals_data.sleep_stage g JOIN vitals_data.sleep_session n ON n.id = g.session_id
+                    WHERE g.user_id = $1 AND n.user_id = $1 AND n.start_at > now() - interval '30 days'
                     GROUP BY stage) st))
                FROM (SELECT start_at, extract(epoch FROM end_at - start_at) / 3600 AS h
                      FROM vitals_data.sleep_session WHERE user_id = $1 AND start_at > now() - interval '30 days') s)
