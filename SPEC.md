@@ -304,6 +304,12 @@ the server refuses to start with a path),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
 Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`.
 
+Limits (constants in the code):
+
+- Database pools: 10 connections for `vitals_app`, 5 for `vitals_reader`. A request that waits more than 5 s for a
+  connection fails as a transient error: `/mcp` tools return a "retry" tool error, `/api/v1/tools/{name}` returns
+  `503`, and `/api/v1/ingest` and `/api/v1/devices` return `500` (which the app retries).
+
 ## Known limits
 
 - Two transactions that each insert the first `sleep_stage` rows of a new time range (each creating a TimescaleDB chunk)
