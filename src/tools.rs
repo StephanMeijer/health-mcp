@@ -46,6 +46,25 @@ impl Kind {
     }
 }
 
+/// Where a reading came from: the `vitals.source` enum (migration 0003).
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Manual,
+    App,
+    Import,
+}
+
+impl Source {
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Manual => "manual",
+            Source::App => "app",
+            Source::Import => "import",
+        }
+    }
+}
+
 /// Values of one reading. Only the fields of the chosen `kind` are allowed.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Values {
@@ -147,8 +166,8 @@ pub struct ReadingList {
     pub from: Option<DateTime<Utc>>,
     /// Default: now.
     pub to: Option<DateTime<Utc>>,
-    /// Only this source: "manual", "app" or "import".
-    pub source: Option<String>,
+    /// Only this source.
+    pub source: Option<Source>,
     /// Max rows, default 100, at most 1000.
     pub limit: Option<i64>,
     /// Newest first (default) or oldest first.
@@ -168,7 +187,8 @@ pub struct ReadingAggregate {
     pub tz: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
-    pub source: Option<String>,
+    /// Only this source.
+    pub source: Option<Source>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
@@ -439,7 +459,7 @@ impl Vitals {
         )))
         .bind(from)
         .bind(to)
-        .bind(p.source)
+        .bind(p.source.map(Source::as_str))
         .bind(limit)
         .bind(user)
         .fetch_one(&mut *tx)
@@ -484,7 +504,7 @@ impl Vitals {
         .bind(p.tz.as_deref().unwrap_or("UTC"))
         .bind(from)
         .bind(to)
-        .bind(p.source)
+        .bind(p.source.map(Source::as_str))
         .bind(user)
         .fetch_all(&mut *tx)
         .await
