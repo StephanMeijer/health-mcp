@@ -672,9 +672,6 @@ devices        (id int, user_id, model, serial, created_at)  -- e.g. model 'Pola
 Raw tracker data (source 'app'):
 ecg            (time, user_id, source, device_id, uv int)                                -- one row per sample, µV, 130 Hz
 acc            (time, user_id, source, device_id, x smallint, y smallint, z smallint)    -- one row per sample, milli-g, 1000 ≈ 1 g, 200 Hz
-ecg_frame      (time, user_id, source, sample_rate smallint, samples int[], device_id)   -- older ecg, one row per frame, until migrated
-acc_frame      (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- older acc, likewise
-               -- in *_frame, sample i (1-based) is at time + (i - 1) / sample_rate seconds
 device_battery (time, user_id, source, level smallint, device_id)  -- %
 device_event   (time, user_id, source, event text, device_id)      -- e.g. connected, disconnected
 skin_temp      (time, user_id, source, sample_rate smallint, celsius real[], device_id)  -- wrist skin °C, 1 Hz

@@ -92,8 +92,8 @@ devices        (id int identity PK, user_id, model text, serial text, created_at
 
 Raw data from the ingest API (`source = 'app'`), keyed `UNIQUE (user_id, source, device_id, time)`. `ecg` and `acc`
 store one row per sample: a frame's sample `i` (0-based) is at `time + i / sample_rate`, rounded to µs, so a resent
-frame deduplicates sample by sample. A frame with an empty array stores nothing. Data stored before migration 0005 is
-in `ecg_frame` / `acc_frame` (one row per frame, the old `ecg` / `acc` columns) until it is copied over.
+frame deduplicates sample by sample. A frame with an empty array stores nothing. Migration 0006 copied the data
+stored one row per frame before 0005 into these tables (it took ~9 minutes for ~18.5 M samples, during startup).
 
 ```sql
 ecg            (time, user_id, source, device_id int → devices, uv int)                      -- µV
@@ -122,8 +122,7 @@ keeps seeing only its own rows through the `vitals.*` views, which don't depend 
 `ecg` and `acc` use 1-hour chunks, compressed once older than 2 hours (`segmentby user_id, source, device_id`,
 `orderby time`; `source` must be a segmentby column because it is in the unique key). A late resend from the phone's
 7-day outbox lands in a compressed chunk and still deduplicates. Why one row per sample: TimescaleDB compresses
-array columns generically, but scalar integer columns with delta-of-delta. Measured on 1.6 h of real H10 data (the
-`_frame` tables use 1-day chunks and the old 8-day policy):
+array columns generically, but scalar integer columns with delta-of-delta. Measured on 1.6 h of real H10 data:
 
 | | per frame (arrays), raw → compressed | per sample, raw → compressed | full read, frame → sample |
 |---|---|---|---|
