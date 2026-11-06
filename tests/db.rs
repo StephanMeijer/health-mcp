@@ -1090,7 +1090,8 @@ async fn tool(db: &Db, user: &str, name: &str, args: Value) -> (u16, Value) {
 async fn app_can_call_every_tool() {
     let (_, db, _) = setup().await;
     let (a, b) = (uid("alice"), uid("bob"));
-    let t = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    // Whole seconds: Postgres keeps microseconds, and update/delete match the exact time.
+    let t = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let hr = |extra: Value| {
         let mut m = json!({"kind": "heart_rate"});
         m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
