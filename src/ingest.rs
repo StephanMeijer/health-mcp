@@ -539,7 +539,7 @@ async fn call_tool(
     };
     match Vitals::new(db).call(&name, args, user).await {
         None => StatusCode::NOT_FOUND.into_response(),
-        // Tools return JSON text, or a plain message for writes ("added 3 heart_rate reading(s)").
+        // Tools return JSON text; `schema_describe` returns plain text, which becomes a JSON string.
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),
         Some(Err(e)) if e == crate::tools::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Some(Err(e)) if e == crate::tools::RETRY => {

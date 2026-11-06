@@ -7,7 +7,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::AssertSqlSafe;
 use uuid::Uuid;
 
@@ -370,7 +370,7 @@ impl Vitals {
         .map_err(db_err)?
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
-        Ok(format!("added {n} {t} reading(s)"))
+        Ok(json!({"added": n, "kind": t}).to_string())
     }
 
     #[tool(
@@ -404,7 +404,7 @@ impl Vitals {
         tx.commit().await.map_err(db_err)?;
         match n {
             0 => Err(format!("no manual {t} reading at {}", p.time.to_rfc3339())),
-            _ => Ok(format!("updated {t} reading at {}", p.time.to_rfc3339())),
+            _ => Ok(json!({"updated": 1, "kind": t, "time": p.time}).to_string()),
         }
     }
 
@@ -437,7 +437,7 @@ impl Vitals {
         .map_err(db_err)?
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
-        Ok(format!("deleted {n} manual {t} reading(s)"))
+        Ok(json!({"deleted": n, "kind": t}).to_string())
     }
 
     #[tool(description = "List raw readings of one kind in a time range (default: last 30 days), newest first.")]
@@ -533,7 +533,7 @@ impl Vitals {
         .map_err(db_err)?;
         insert_stages(&mut tx, user, id, &p.stages).await?;
         tx.commit().await.map_err(db_err)?;
-        Ok(format!("added sleep session {id}"))
+        Ok(json!({"id": id}).to_string())
     }
 
     #[tool(description = "Change a manual sleep session; `stages` replaces all its stages.")]
@@ -571,7 +571,7 @@ impl Vitals {
             insert_stages(&mut tx, user, p.id, &stages).await?;
         }
         tx.commit().await.map_err(db_err)?;
-        Ok(format!("updated sleep session {}", p.id))
+        Ok(json!({"id": p.id}).to_string())
     }
 
     #[tool(description = "Delete a manual sleep session and its stages.")]
@@ -593,7 +593,7 @@ impl Vitals {
         tx.commit().await.map_err(db_err)?;
         match n {
             0 => Err(format!("no manual sleep session {}", p.id)),
-            _ => Ok(format!("deleted sleep session {}", p.id)),
+            _ => Ok(json!({"id": p.id}).to_string()),
         }
     }
 

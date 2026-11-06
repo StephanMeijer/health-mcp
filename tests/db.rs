@@ -119,7 +119,7 @@ async fn readings_round_trip() {
         )
         .await
         .unwrap();
-    assert_eq!(msg, "deleted 1 manual heart_rate reading(s)");
+    assert_eq!(msg, json!({"deleted": 1, "kind": "heart_rate"}).to_string());
 }
 
 #[tokio::test]
@@ -224,7 +224,7 @@ async fn imported_readings_are_read_only() {
         )
         .await
         .unwrap();
-    assert_eq!(del, "deleted 0 manual heart_rate reading(s)");
+    assert_eq!(del, json!({"deleted": 0, "kind": "heart_rate"}).to_string());
 
     let rows = sql(&v, &a, "SELECT bpm, source FROM heart_rate").await.unwrap();
     assert_eq!(rows["rows"], json!([{"bpm": 55, "source": "import"}]));
@@ -251,7 +251,7 @@ async fn other_users_rows_are_invisible_and_untouchable() {
             as_user(&b),
         )
         .await;
-    assert_eq!(del.unwrap(), "deleted 0 manual heart_rate reading(s)");
+    assert_eq!(del.unwrap(), json!({"deleted": 0, "kind": "heart_rate"}).to_string());
 
     assert_eq!(
         sql(&v, &a, "SELECT bpm FROM heart_rate").await.unwrap()["rows"],
@@ -476,8 +476,12 @@ async fn sleep_and_summary() {
     );
 }
 
+/// The `id` of a sleep tool's `{"id": …}` result.
 fn session_id(msg: &str) -> String {
-    msg.rsplit(' ').next().unwrap().to_owned()
+    serde_json::from_str::<Value>(msg).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 async fn stage_seconds(v: &Vitals, user: &str) -> Value {
@@ -986,7 +990,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         )
         .await
         .unwrap();
-    assert_eq!(del, "deleted 1 manual hrv reading(s)");
+    assert_eq!(del, json!({"deleted": 1, "kind": "hrv"}).to_string());
     let stages = json!({"id": id, "stages": [{"time": "2026-08-20T13:00:00Z", "stage": "rem", "duration_s": 300}]});
     v.sleep_update(p(stages), as_user(&a)).await.unwrap();
 
@@ -1141,7 +1145,7 @@ async fn app_can_call_every_tool() {
         hr(json!({"readings": [{"time": t, "bpm": 64}]})),
     )
     .await;
-    assert_eq!((s, out), (200, json!("added 1 heart_rate reading(s)")));
+    assert_eq!((s, out), (200, json!({"added": 1, "kind": "heart_rate"})));
     let (s, out) = tool(&db, &a, "reading_list", hr(json!({}))).await;
     assert_eq!((s, out[0]["bpm"].clone()), (200, json!(64)));
     let (s, out) = tool(&db, &a, "reading_aggregate", hr(json!({"field": "bpm"}))).await;
@@ -1165,9 +1169,9 @@ async fn app_can_call_every_tool() {
     assert_eq!(out["rows"], json!([]));
 
     let (s, out) = tool(&db, &a, "reading_update", hr(json!({"time": t, "set": {"bpm": 66}}))).await;
-    assert_eq!(s, 200, "{out}");
+    assert_eq!((s, out), (200, json!({"updated": 1, "kind": "heart_rate", "time": t})));
     let (s, out) = tool(&db, &a, "reading_delete", hr(json!({"times": [t]}))).await;
-    assert_eq!((s, out), (200, json!("deleted 1 manual heart_rate reading(s)")));
+    assert_eq!((s, out), (200, json!({"deleted": 1, "kind": "heart_rate"})));
 
     {
         let _serial = SLEEP_WRITES.lock().await;
@@ -1181,13 +1185,13 @@ async fn app_can_call_every_tool() {
         )
         .await;
         assert_eq!(s, 200, "{out}");
-        let id = session_id(out.as_str().unwrap());
+        let id = out["id"].as_str().unwrap().to_owned();
         let (s, out) = tool(&db, &a, "sleep_list", range.clone()).await;
         assert_eq!((s, out[0]["stage_seconds"].clone()), (200, json!({"deep": 600})));
         let (s, out) = tool(&db, &a, "sleep_update", json!({"id": id, "note": "late"})).await;
-        assert_eq!(s, 200, "{out}");
+        assert_eq!((s, out), (200, json!({"id": id})));
         let (s, out) = tool(&db, &a, "sleep_delete", json!({ "id": id })).await;
-        assert_eq!(s, 200, "{out}");
+        assert_eq!((s, out), (200, json!({"id": id})));
         assert_eq!(tool(&db, &a, "sleep_list", range).await, (200, json!([])));
     }
 

@@ -283,8 +283,9 @@ The app calls the same tools as MCP clients, with the same arguments and results
 - `GET /api/v1/tools` → `200 [{"name", "description", "inputSchema"}, …]`. The input JSON Schemas are generated from
   the same Rust structs as MCP's `tools/list`, so the app can generate its client types from them.
 - `POST /api/v1/tools/{name}` with the tool's arguments as a JSON body (empty means `{}`) → `200` with the tool's
-  output: JSON for reads (`reading_list`, `summary`, `sql_query`, …), a JSON string for write messages
-  (`"added 1 heart_rate reading(s)"`).
+  output: JSON for reads (`reading_list`, `summary`, `sql_query`, …), a JSON string for `schema_describe`, and a small
+  object for writes: `{"added": n, "kind"}`, `{"updated": 1, "kind", "time"}`, `{"deleted": n, "kind"}` for readings,
+  `{"id"}` for `sleep_add`, `sleep_update` and `sleep_delete`.
   A tool error or bad argument → `400 {"error": "…"}` with the message the model would get; unknown tool → `404`;
   body over 1 MiB after decompression → `413`; a transient database failure → `503 {"error": "temporarily unavailable, retry"}`,
   safe to retry: SQLSTATE class 40 (deadlock, serialization failure; not 40002), 08000/08003/08006 reported by the
