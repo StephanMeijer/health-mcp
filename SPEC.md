@@ -256,13 +256,16 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
   absolute values. Each difference and each rebuilt value must fit the array's type (`i16` for `acc`, `i32` for `ecg`),
   otherwise the frame is a `400`; send such a frame absolute. Deploy the server before an app that sends it.
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
+  Every frame time (`time`, `start_at`, `end_at`, stage `time`, and a recharge `night` by date, ±1 day for time
+  zones) must lie between 8 days ago (the phone's 7-day outbox plus a day) and 1 hour from now; otherwise the frame is
+  a `400`. This keeps a buggy clock from spreading one batch over thousands of hourly `ecg`/`acc` chunks.
   `device_id` is the id from `POST /api/v1/devices`; a frame with an id that isn't one of the user's devices is a `400`.
 - **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
 
 | Response | Meaning |
 |---|---|
 | `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored, or were `ecg`/`acc` frames with empty arrays |
-| `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid; nothing was stored |
+| `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid (including a time outside the window above); nothing was stored |
 | `401` | Missing or bad token, with the RFC 9728 challenge |
 | `408` | Took more than 60 s, including waiting for a free slot; retry (if it did commit, the retry is a no-op) |
 | `413` | Body over 32 MiB after decompression, or more than 5000 frames |

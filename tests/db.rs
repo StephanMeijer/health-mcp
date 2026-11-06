@@ -647,9 +647,15 @@ async fn imported_sleep_is_read_only() {
 
 // Ingest ----------------------------------------------------------------------
 
+/// Ingest only accepts frames from the last 8 days, so these tests ingest as if it were this moment. Their days:
+/// 2026-09-26/27 (edits on compressed chunks), 2026-09-28 (dedup into compressed ecg/acc), 2026-10-01..03 (the rest).
+const INGEST_NOW: &str = "2026-10-04T00:00:00Z";
+
 async fn api(db: &Db, user: &str, req: Request<axum::body::Body>) -> (u16, Value) {
     use tower::ServiceExt;
-    let app: axum::Router = vitals_mcp::ingest::router(db.clone()).layer(axum::Extension(User(user.to_owned())));
+    let app: axum::Router = vitals_mcp::ingest::router(db.clone())
+        .layer(axum::Extension(User(user.to_owned())))
+        .layer(axum::Extension(vitals_mcp::ingest::Clock(INGEST_NOW.parse().unwrap())));
     let res = app.oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
@@ -847,6 +853,28 @@ async fn two_trackers_at_the_same_instant_are_two_heart_rate_rows() {
 }
 
 #[tokio::test]
+async fn ingest_checks_frame_times_against_the_real_clock() {
+    use tower::ServiceExt;
+    let (_, db, _) = setup().await;
+    let a = uid("alice");
+    let d = register(&db, &a, "Polar H10", "CLOCK").await;
+    // No Clock extension, unlike `api`: the handler uses the system clock.
+    let post = |time: String| {
+        let app: axum::Router = vitals_mcp::ingest::router(db.clone()).layer(axum::Extension(User(a.clone())));
+        let body = json!({"type": "battery", "device_id": d, "time": time, "level": 50}).to_string();
+        async move {
+            let req = Request::post("/v1/ingest")
+                .header("content-type", "application/x-ndjson")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status().as_u16()
+        }
+    };
+    assert_eq!(post("2020-01-01T00:00:00Z".into()).await, 400);
+    assert_eq!(post(chrono::Utc::now().to_rfc3339()).await, 200);
+}
+
+#[tokio::test]
 async fn ingest_rejects_unsupported_requests() {
     let (_, db, _) = setup().await;
     let a = uid("alice");
@@ -892,7 +920,7 @@ async fn ingest_dedups_into_compressed_chunks() {
     let d = register(&db, &a, "Polar H10", "244E7234").await;
     // An hour no other test writes to, so compressing its chunks can't disturb them.
     let frame = |kind: &str, sec: u32| {
-        let t = format!("2026-09-15T08:00:{sec:02}Z");
+        let t = format!("2026-09-28T08:00:{sec:02}Z");
         match kind {
             "ecg" => json!({"type": "ecg", "device_id": d, "time": t, "sample_rate": 130, "samples": [1, 2]}),
             _ => json!({"type": "acc", "device_id": d, "time": t, "sample_rate": 200, "x": [1], "y": [2], "z": [3]}),
@@ -908,8 +936,8 @@ async fn ingest_dedups_into_compressed_chunks() {
     // fresh DB); compress_chunk then raises 42710 despite if_not_compressed. The assertion below is the real check.
     sqlx::query(
         "DO $$ DECLARE c regclass; BEGIN
-           FOR c IN SELECT show_chunks(t, older_than => '2026-09-15 09:00Z'::timestamptz,
-                                        newer_than => '2026-09-15 08:00Z'::timestamptz)
+           FOR c IN SELECT show_chunks(t, older_than => '2026-09-28 09:00Z'::timestamptz,
+                                        newer_than => '2026-09-28 08:00Z'::timestamptz)
                       FROM unnest('{vitals_data.ecg,vitals_data.acc}'::regclass[]) t LOOP
              BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
              EXCEPTION WHEN duplicate_object THEN NULL;
@@ -923,7 +951,7 @@ async fn ingest_dedups_into_compressed_chunks() {
     let compressed: bool = sqlx::query_scalar(
         "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
           WHERE hypertable_schema = 'vitals_data' AND hypertable_name IN ('ecg', 'acc')
-            AND range_start = '2026-09-15 08:00Z'",
+            AND range_start = '2026-09-28 08:00Z'",
     )
     .fetch_one(&owner)
     .await
@@ -943,8 +971,10 @@ async fn compress_day(owner: &PgPool, tables: &[&str], day: &str) {
     for t in tables {
         sqlx::query(AssertSqlSafe(format!(
             "DO $$ DECLARE c regclass; BEGIN
-               FOR c IN SELECT show_chunks('vitals_data.{t}', older_than => '{day}'::timestamptz + interval '8 days',
-                                           newer_than => '{day}'::timestamptz - interval '7 days') LOOP
+               FOR c IN SELECT format('%I.%I', chunk_schema, chunk_name)::regclass
+                          FROM timescaledb_information.chunks
+                         WHERE hypertable_schema = 'vitals_data' AND hypertable_name = '{t}'
+                           AND range_start <= '{day}'::timestamptz AND range_end > '{day}'::timestamptz LOOP
                  BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
                  EXCEPTION WHEN duplicate_object THEN NULL;
                  END;
@@ -975,14 +1005,14 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     let a = uid("alice");
     let d = register(&db, &a, "Polar Loop", "C").await;
     // A day no other test writes to, so compressing its chunks can't disturb them.
-    let t = "2026-08-20T08:00:00Z";
+    let t = "2026-09-27T08:00:00Z";
     let batch = [
         json!({"type": "hr", "device_id": d, "time": t, "bpm": 60}),
         json!({"type": "battery", "device_id": d, "time": t, "level": 80}),
         json!({"type": "status", "device_id": d, "time": t, "event": "connected"}),
         json!({"type": "skin_temp", "device_id": d, "time": t, "sample_rate": 1, "celsius": [33.5]}),
-        json!({"type": "sleep", "device_id": d, "start_at": "2026-08-19T23:00:00Z", "end_at": "2026-08-20T07:00:00Z",
-               "stages": [{"time": "2026-08-19T23:00:00Z", "stage": "light", "duration_s": 600}]}),
+        json!({"type": "sleep", "device_id": d, "start_at": "2026-09-26T23:00:00Z", "end_at": "2026-09-27T07:00:00Z",
+               "stages": [{"time": "2026-09-26T23:00:00Z", "stage": "light", "duration_s": 600}]}),
     ]
     .iter()
     .map(|f| f.to_string() + "\n")
@@ -991,7 +1021,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     assert_eq!(post(batch.clone()).await, (200, json!({"frames": 5, "inserted": 5})));
     for (kind, values) in [("heart_rate", json!({"bpm": 61})), ("hrv", json!({"rmssd_ms": 40}))] {
         let mut r = values;
-        r["time"] = json!("2026-08-20T09:00:00Z");
+        r["time"] = json!("2026-09-27T09:00:00Z");
         v.reading_add(p(json!({"kind": kind, "readings": [r]})), as_user(&a))
             .await
             .unwrap();
@@ -999,8 +1029,8 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     let id = session_id(
         &v.sleep_add(
             p(
-                json!({"start_at": "2026-08-20T13:00:00Z", "end_at": "2026-08-20T14:00:00Z",
-                     "stages": [{"time": "2026-08-20T13:00:00Z", "stage": "light", "duration_s": 600}]}),
+                json!({"start_at": "2026-09-27T13:00:00Z", "end_at": "2026-09-27T14:00:00Z",
+                     "stages": [{"time": "2026-09-27T13:00:00Z", "stage": "light", "duration_s": 600}]}),
             ),
             as_user(&a),
         )
@@ -1018,38 +1048,38 @@ async fn edits_and_resends_work_on_compressed_chunks() {
             "skin_temp",
             "sleep_stage",
         ],
-        "2026-08-20",
+        "2026-09-27",
     )
     .await;
 
     // Resends still deduplicate, new frames still land.
     assert_eq!(post(batch).await, (200, json!({"frames": 5, "inserted": 0})));
-    let new = json!({"type": "hr", "device_id": d, "time": "2026-08-20T08:00:01Z", "bpm": 62}).to_string();
+    let new = json!({"type": "hr", "device_id": d, "time": "2026-09-27T08:00:01Z", "bpm": 62}).to_string();
     assert_eq!(post(new).await, (200, json!({"frames": 1, "inserted": 1})));
     // A manual row (NULL device_id, a segmentby column) is still unique once compressed.
     let dup = v
         .reading_add(
-            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-08-20T09:00:00Z", "bpm": 61}]})),
+            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-09-27T09:00:00Z", "bpm": 61}]})),
             as_user(&a),
         )
         .await;
     assert!(dup.unwrap_err().to_string().contains("duplicate key"));
     // Manual edits still work.
     v.reading_update(
-        p(json!({"kind": "heart_rate", "time": "2026-08-20T09:00:00Z", "set": {"bpm": 70}})),
+        p(json!({"kind": "heart_rate", "time": "2026-09-27T09:00:00Z", "set": {"bpm": 70}})),
         as_user(&a),
     )
     .await
     .unwrap();
     let del = v
         .reading_delete(
-            p(json!({"kind": "hrv", "times": ["2026-08-20T09:00:00Z"]})),
+            p(json!({"kind": "hrv", "times": ["2026-09-27T09:00:00Z"]})),
             as_user(&a),
         )
         .await
         .unwrap();
     assert_eq!(del, json!({"deleted": 1, "kind": "hrv"}).to_string());
-    let stages = json!({"id": id, "stages": [{"time": "2026-08-20T13:00:00Z", "stage": "rem", "duration_s": 300}]});
+    let stages = json!({"id": id, "stages": [{"time": "2026-09-27T13:00:00Z", "stage": "rem", "duration_s": 300}]});
     v.sleep_update(p(stages), as_user(&a)).await.unwrap();
 
     let rows = sql(
@@ -1067,7 +1097,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     );
 
     // sleep_delete cascades into the compressed stages.
-    compress_day(&owner, &["sleep_stage"], "2026-08-20").await;
+    compress_day(&owner, &["sleep_stage"], "2026-09-27").await;
     v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap();
     let left = sql(
         &v,
