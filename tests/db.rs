@@ -897,6 +897,22 @@ async fn ingest_rejects_unsupported_requests() {
         post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), bomb).await.0,
         413
     );
+    // Too many ecg/acc samples to insert in time: 413, which the app answers by splitting the batch.
+    let ecg = |n: usize| {
+        json!({"type": "ecg", "device_id": 1, "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": vec![0; n]})
+            .to_string()
+    };
+    let max = vitals_mcp::ingest::MAX_SAMPLES;
+    let two = format!("{}\n{}", ecg(max / 2), ecg(max / 2 + 1));
+    assert_eq!(
+        post_ingest(&db, &a, "application/x-ndjson", None, two.into_bytes())
+            .await
+            .0,
+        413
+    );
+    // One frame over the cap can't be split: 400 naming the frame.
+    let (status, body) = post_ingest(&db, &a, "application/x-ndjson", None, ecg(max + 1).into_bytes()).await;
+    assert_eq!((status, body["frame"].clone()), (400, json!(0)));
     // Empty heartbeat batches are fine.
     assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, vec![]).await.0, 200);
 }
