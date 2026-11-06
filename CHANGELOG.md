@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.1...v0.4.2) - 2026-11-06
+
+### Added
+
+- *(api)* expose every mcp tool to the app over /api
+
 ## [0.4.1](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.0...v0.4.1) - 2026-11-06
 
 ### Other
