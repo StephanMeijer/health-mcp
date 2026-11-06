@@ -90,12 +90,14 @@ devices        (id int identity PK, user_id, model text, serial text, created_at
                 UNIQUE (user_id, model, serial))       -- e.g. ('Polar H10', '244E7234')
 ```
 
-Raw frames from the ingest API (`source = 'app'`), one row per frame as the device sent it, keyed
-`UNIQUE (user_id, source, device_id, time)`. `time` is the first sample; sample `i` (0-based) is at `time + i / sample_rate`.
+Raw data from the ingest API (`source = 'app'`), keyed `UNIQUE (user_id, source, device_id, time)`. `ecg` and `acc`
+store one row per sample: a frame's sample `i` (0-based) is at `time + i / sample_rate`, rounded to µs, so a resent
+frame deduplicates sample by sample. A frame with an empty array stores nothing. Data stored before migration 0005 is
+in `ecg_frame` / `acc_frame` (one row per frame, the old `ecg` / `acc` columns) until it is copied over.
 
 ```sql
-ecg            (time, user_id, source, sample_rate smallint, samples int[], device_id int → devices)        -- µV
-acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g
+ecg            (time, user_id, source, device_id int → devices, uv int)                      -- µV
+acc            (time, user_id, source, device_id, x smallint, y smallint, z smallint)      -- milli-g
 device_battery (time, user_id, source, level smallint, device_id)                             -- %
 device_event   (time, user_id, source, event text, device_id)
 skin_temp      (time, user_id, source, sample_rate smallint, celsius real[], device_id)   -- °C, CHECK 0 < c < 50
@@ -114,12 +116,22 @@ same instant are two rows, while rows without a device still deduplicate on `(us
 Rows from before migration 0003 (source `polar_h10`) have a `device_id` only if their user had exactly one device.
 
 The four raw tables have **no RLS**, so that `ecg` and `acc` can be compressed (TimescaleDB refuses the columnstore on tables
-with row security). Chunks older than 8 days are compressed, after the phone's 7-day outbox can no longer resend into them;
-a late resend still works and still deduplicates. `vitals_app` has only `INSERT` on them, and the server takes `user_id`
-from the token. The reader keeps seeing only its own rows through the `vitals.*` views, which don't depend on RLS.
-Measured on 1.87 h of real strap data: ecg 6.0 MB → 1.9 MB, acc 18 MB → 7.7 MB, heart_rate 1.8 MB (not compressed),
-so about 6 MB per hour of wear, ~150 MB per day at 24/7. One row per sample compresses better (ecg 1.8 MB, acc 4.8 MB)
-but is ~10× larger until compressed; delta-encoding the arrays saved only 5–16 %. Neither is worth it.
+with row security). `vitals_app` has only `INSERT` on them, and the server takes `user_id` from the token. The reader
+keeps seeing only its own rows through the `vitals.*` views, which don't depend on RLS.
+
+`ecg` and `acc` use 1-hour chunks, compressed once older than 2 hours (`segmentby user_id, source, device_id`,
+`orderby time`; `source` must be a segmentby column because it is in the unique key). A late resend from the phone's
+7-day outbox lands in a compressed chunk and still deduplicates. Why one row per sample: TimescaleDB compresses
+array columns generically, but scalar integer columns with delta-of-delta. Measured on 1.6 h of real H10 data (the
+`_frame` tables use 1-day chunks and the old 8-day policy):
+
+| | per frame (arrays), raw → compressed | per sample, raw → compressed | full read, frame → sample |
+|---|---|---|---|
+| ecg | 5.0 → 1.63 MB | 101 → 1.41 MB | 75 → 23 ms |
+| acc | 14.0 → 7.39 MB | 167 → 4.23 MB | 641 → 32 ms |
+
+So about 85 MB per day at 24/7 instead of 135 MB, but ~15× larger until compressed, hence the short chunks.
+lz4, 10-second arrays and delta-encoded arrays all saved less.
 
 Each table also gets CHECK ranges for plausible values (for example `bpm BETWEEN 20 AND 250`).
 These catch typos and unit mix-ups (lb vs kg, °F vs °C) at the boundary.
@@ -227,7 +239,7 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
 
 | Response | Meaning |
 |---|---|
-| `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored |
+| `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored, or were `ecg`/`acc` frames with empty arrays |
 | `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid; nothing was stored |
 | `401` | Missing or bad token, with the RFC 9728 challenge |
 | `413` | Body over 32 MiB after decompression, or more than 5000 frames |

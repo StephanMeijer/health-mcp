@@ -669,16 +669,19 @@ sleep_stage    (time, user_id, session_id → sleep_session.id, stage 'awake'|'l
 
 devices        (id int, user_id, model, serial, created_at)  -- e.g. model 'Polar H10', serial '244E7234'
 
-Raw tracker frames (source 'app'); one row per frame, sample i is at time + (i - 1) / sample_rate seconds:
-ecg            (time, user_id, source, sample_rate smallint, samples int[], device_id)   -- µV, 130 Hz
-acc            (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- milli-g, 1000 ≈ 1 g, 200 Hz
+Raw tracker data (source 'app'):
+ecg            (time, user_id, source, device_id, uv int)                                -- one row per sample, µV, 130 Hz
+acc            (time, user_id, source, device_id, x smallint, y smallint, z smallint)    -- one row per sample, milli-g, 1000 ≈ 1 g, 200 Hz
+ecg_frame      (time, user_id, source, sample_rate smallint, samples int[], device_id)   -- older ecg, one row per frame, until migrated
+acc_frame      (time, user_id, source, sample_rate smallint, x smallint[], y smallint[], z smallint[], device_id)  -- older acc, likewise
+               -- in *_frame, sample i (1-based) is at time + (i - 1) / sample_rate seconds
 device_battery (time, user_id, source, level smallint, device_id)  -- %
 device_event   (time, user_id, source, event text, device_id)      -- e.g. connected, disconnected
 skin_temp      (time, user_id, source, sample_rate smallint, celsius real[], device_id)  -- wrist skin °C, 1 Hz
 recharge       (night date, user_id, source, device_id, status smallint, ans_charge real, hrv_ms real, breathing_rate real, hr_bpm smallint)
                -- Polar Nightly Recharge: status 1 very poor … 6 very good, ans_charge -10..+10 (autonomic recovery vs your baseline),
                -- hrv_ms/breathing_rate/hr_bpm are overnight averages (breaths per minute for breathing_rate)
-ecg is ~7.8k samples per minute, acc ~12k per axis per minute: aggregate with time_bucket, never return raw arrays for long periods.
+ecg is ~7.8k rows per minute, acc ~12k: aggregate with time_bucket, never return raw samples for long periods.
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
 source is 'manual' for readings logged through this server, 'app' for trackers sent by the phone app, 'import' for importers.
