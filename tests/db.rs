@@ -991,9 +991,12 @@ async fn reading_aggregate_caps_buckets_and_app_queries_time_out() {
     let readings: Vec<Value> = (0..1001)
         .map(|i| json!({"time": format!("2026-09-20T10:{:02}:{:02}Z", i / 60, i % 60), "bpm": 60}))
         .collect();
-    v.reading_add(p(json!({"kind": "heart_rate", "readings": readings})), as_user(&a))
-        .await
-        .unwrap();
+    // reading_add takes at most 1000 per call.
+    for chunk in readings.chunks(1000) {
+        v.reading_add(p(json!({"kind": "heart_rate", "readings": chunk})), as_user(&a))
+            .await
+            .unwrap();
+    }
     let agg: Value = serde_json::from_str(
         &v.reading_aggregate(
             p(json!({"kind": "heart_rate", "field": "bpm", "bucket": "1 second",
@@ -1112,6 +1115,12 @@ async fn app_can_call_every_tool() {
     assert_eq!((s, out["buckets"][0]["n"].clone()), (200, json!(1)));
     let (s, out) = tool(&db, &a, "summary", Value::Null).await;
     assert_eq!((s, out["heart_rate"]["latest"]["bpm"].clone()), (200, json!(64)));
+    // A truly empty body means `{}`.
+    let empty = Request::post("/v1/tools/summary")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let (s, out) = api(&db, &a, empty).await;
+    assert_eq!((s, out["heart_rate"]["latest"]["bpm"].clone()), (200, json!(64)));
     let (s, out) = tool(&db, &a, "schema_describe", json!({})).await;
     assert!(s == 200 && out.as_str().unwrap().contains("heart_rate"), "{s} {out}");
     let (s, out) = tool(&db, &a, "sql_query", json!({"sql": "SELECT bpm FROM heart_rate"})).await;
@@ -1158,6 +1167,25 @@ async fn app_can_call_every_tool() {
     let (s, out) = tool(&db, &a, "reading_aggregate", hr(json!({"field": "kg"}))).await;
     assert!(
         s == 400 && out["error"].as_str().unwrap().contains("does not belong"),
+        "{s} {out}"
+    );
+
+    // Tool bodies get 1 MiB, not ingest's 32 MiB, also after decompression.
+    let pad = "x".repeat(vitals_mcp::ingest::MAX_TOOL_BODY);
+    assert_eq!(tool(&db, &a, "summary", json!({ "pad": pad })).await.0, 413);
+    let bomb = zstd::encode_all(json!({ "pad": pad }).to_string().as_bytes(), 19).unwrap();
+    let req = Request::post("/v1/tools/summary")
+        .header("content-encoding", "zstd")
+        .body(axum::body::Body::from(bomb))
+        .unwrap();
+    assert_eq!(api(&db, &a, req).await.0, 413);
+    // reading_add takes at most 1000 readings per call (well under the body limit).
+    let many: Vec<_> = (0..1001)
+        .map(|i| json!({"time": format!("2026-01-01T00:00:{:02}Z", i % 60), "bpm": 60}))
+        .collect();
+    let (s, out) = tool(&db, &a, "reading_add", hr(json!({ "readings": many }))).await;
+    assert!(
+        s == 400 && out["error"].as_str().unwrap().contains("at most 1000 readings"),
         "{s} {out}"
     );
 }

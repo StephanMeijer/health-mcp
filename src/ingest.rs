@@ -20,6 +20,8 @@ use crate::tools::{SleepStage, Vitals};
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
 pub const MAX_FRAMES: usize = 5000;
+/// Tool arguments are small; this also applies after decompression.
+pub const MAX_TOOL_BODY: usize = 1 << 20;
 
 /// How `ecg` and `acc` arrays are sent: as values, or as differences from the previous value (the first from 0).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -540,6 +542,9 @@ async fn call_tool(
         // Tools return JSON text, or a plain message for writes ("added 3 heart_rate reading(s)").
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),
         Some(Err(e)) if e == "internal error" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Some(Err(e)) if e == crate::tools::RETRY => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response()
+        }
         Some(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
 }
@@ -550,7 +555,11 @@ pub fn router<S: Clone + Send + Sync + 'static>(db: Db) -> Router<S> {
         .route("/v1/devices", get(list_devices).post(register_device))
         .route("/v1/ingest", post(ingest))
         .route("/v1/tools", get(list_tools))
-        .route("/v1/tools/{name}", post(call_tool))
+        // Route layers run inside the router's, so this limit replaces MAX_BODY here.
+        .route(
+            "/v1/tools/{name}",
+            post(call_tool).layer(DefaultBodyLimit::max(MAX_TOOL_BODY)),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
         // Unknown Content-Encoding → 415, which the app takes as "fall back to gzip".
         .layer(RequestDecompressionLayer::new())
