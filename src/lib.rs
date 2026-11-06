@@ -97,6 +97,15 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
             "/.well-known/oauth-protected-resource/api",
             get(auth::metadata).with_state(api_verifier),
         )
+        // Outermost, so rejected requests (401, 408, 413) are logged too. Method and path only: query strings and
+        // headers (the bearer token) never reach the log. Health checks are added after it to keep probes out.
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(|req: &axum::extract::Request| {
+                    tracing::info_span!("request", method = %req.method(), path = req.uri().path())
+                })
+                .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::INFO)),
+        )
         // Liveness: the process answers. Readiness: it can also reach the database.
         .route("/healthz", get(|| async { "ok" }))
         .route(
