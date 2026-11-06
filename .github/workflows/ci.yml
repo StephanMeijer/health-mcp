@@ -43,7 +43,8 @@ jobs:
       - run: cargo test --locked
 
   clippy:
-    runs-on: 9xx
+    # Fork PRs run untrusted build.rs / proc macros / rust-toolchain.toml: keep them off self-hosted runners.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || '9xx' }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -55,7 +56,8 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   fmt:
-    runs-on: 9xx
+    # Fork PRs run untrusted build.rs / proc macros / rust-toolchain.toml: keep them off self-hosted runners.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || '9xx' }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -134,7 +136,7 @@ jobs:
       !cancelled()
       && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/vitals-mcp'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
