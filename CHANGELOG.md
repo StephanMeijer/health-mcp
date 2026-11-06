@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.3...v0.5.0) - 2026-11-06
+
+### Added
+
+- *(tools)* [**breaking**] store body measurements one value per row
+- *(api)* cap ecg and acc samples per ingest batch
+- *(api)* reject ingest frames outside a plausible time window
+- *(tools)* cap sql_query output at 1 MiB ([#75](https://github.com/StephanMeijer/vitals-mcp/pull/75))
+- *(tools)* [**breaking**] return json objects from the write tools
+- *(api)* log every request with method, path, status and latency
+- *(api)* add a readiness endpoint that checks the database
+- *(api)* bound concurrent requests and time out slow ones
+- *(db)* set explicit pool sizes and a connection acquire timeout
+
+### Fixed
+
+- *(tools)* split summary sleep stages over the same 30 days as its nights ([#57](https://github.com/StephanMeijer/vitals-mcp/pull/57))
+- *(tools)* take source as an enum, reject unknown values ([#56](https://github.com/StephanMeijer/vitals-mcp/pull/56))
+
+### Other
+
+- run clippy and fmt on the 9xx self-hosted runners
+- *(tools)* type the retry and internal tool errors
+- *(spec)* record that real Authelia tokens work for both clients ([#70](https://github.com/StephanMeijer/vitals-mcp/pull/70))
+- *(tools)* cover reading_update and reading_delete argument errors ([#59](https://github.com/StephanMeijer/vitals-mcp/pull/59))
+- *(main)* cover the public url to resource and host derivation ([#58](https://github.com/StephanMeijer/vitals-mcp/pull/58))
+
 ## [0.4.3](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.2...v0.4.3) - 2026-11-06
 
 ### Fixed
