@@ -1,9 +1,17 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use tokio::signal::unix::{SignalKind, signal};
 use vitals_mcp::{auth, db::Db};
+
+/// Typed tools and ingest. A request that waits longer than `ACQUIRE_TIMEOUT` for a connection fails retryably:
+/// a retry tool error or 503 from the typed tools, a 500 from ingest and devices.
+const APP_CONNECTIONS: u32 = 10;
+/// `sql_query` only: fewer, so untrusted SQL can't take every connection the typed tools need.
+const READER_CONNECTIONS: u32 = 5;
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn env(key: &str) -> anyhow::Result<String> {
     std::env::var(key).with_context(|| format!("{key} must be set"))
@@ -26,10 +34,14 @@ async fn main() -> anyhow::Result<()> {
     }
     let db = Db {
         app: PgPoolOptions::new()
+            .max_connections(APP_CONNECTIONS)
+            .acquire_timeout(ACQUIRE_TIMEOUT)
             .connect(&env("DATABASE_URL")?)
             .await
             .context("DATABASE_URL")?,
         reader: vitals_mcp::db::reader_pool_options()
+            .max_connections(READER_CONNECTIONS)
+            .acquire_timeout(ACQUIRE_TIMEOUT)
             .connect(&env("DATABASE_READER_URL")?)
             .await
             .context("DATABASE_READER_URL")?,
