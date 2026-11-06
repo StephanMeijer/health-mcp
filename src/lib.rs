@@ -5,10 +5,37 @@ pub mod tools;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{Router, middleware, routing::get};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
+
+/// What `PUBLIC_URL` determines: the MCP and API resources (each the RFC 9728 resource and the required
+/// token audience, so MCP tokens don't work on `/api` and vice versa) and the only allowed `Host` for `/mcp`.
+#[derive(Debug)]
+pub struct Endpoints {
+    pub resource: String,
+    pub api_resource: String,
+    pub host: String,
+}
+
+pub fn endpoints(public_url: &str) -> anyhow::Result<Endpoints> {
+    let public_url = reqwest::Url::parse(public_url).context("PUBLIC_URL")?;
+    anyhow::ensure!(
+        public_url.path() == "/",
+        "PUBLIC_URL must be an origin without a path, e.g. https://vitals.example.com"
+    );
+    let host_str = public_url.host_str().context("PUBLIC_URL has no host")?;
+    Ok(Endpoints {
+        resource: public_url.join("mcp")?.to_string(),
+        api_resource: public_url.join("api")?.to_string(),
+        host: match public_url.port() {
+            Some(p) => format!("{host_str}:{p}"),
+            None => host_str.to_owned(),
+        },
+    })
+}
 
 /// All routes. `verifier` guards `/mcp`, `api_verifier` guards `/api`: each has its own audience,
 /// so MCP tokens don't work on `/api` and vice versa. `host` is the only allowed `Host` for `/mcp`.
@@ -108,6 +135,22 @@ mod tests {
         r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/api""#;
     const MCP_CHALLENGE: &str =
         r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/mcp""#;
+
+    #[test]
+    fn endpoints_come_from_public_url() {
+        let e = endpoints("https://vitals.example.com").unwrap();
+        assert_eq!(
+            (e.resource.as_str(), e.api_resource.as_str(), e.host.as_str()),
+            (MCP, API, "vitals.example.com")
+        );
+        let e = endpoints("https://vitals.example.com:8443/").unwrap();
+        assert_eq!(
+            (e.resource.as_str(), e.host.as_str()),
+            ("https://vitals.example.com:8443/mcp", "vitals.example.com:8443")
+        );
+        let err = endpoints("https://vitals.example.com/x").unwrap_err().to_string();
+        assert!(err.contains("PUBLIC_URL"), "{err}");
+    }
 
     #[tokio::test]
     async fn each_endpoint_accepts_only_its_own_audience() {

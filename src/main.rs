@@ -13,19 +13,11 @@ fn env(key: &str) -> anyhow::Result<String> {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let public_url = reqwest::Url::parse(&env("PUBLIC_URL")?).context("PUBLIC_URL")?;
-    anyhow::ensure!(
-        public_url.path() == "/",
-        "PUBLIC_URL must be an origin without a path, e.g. https://vitals.example.com"
-    );
-    // The MCP endpoint URL is both the RFC 9728 resource and the required token audience.
-    let resource = public_url.join("mcp")?.to_string();
-    // Same scheme for the device API: its own resource and audience, so MCP tokens don't work there and vice versa.
-    let api_resource = public_url.join("api")?.to_string();
-    let host = match public_url.port() {
-        Some(p) => format!("{}:{p}", public_url.host_str().context("PUBLIC_URL has no host")?),
-        None => public_url.host_str().context("PUBLIC_URL has no host")?.to_owned(),
-    };
+    let vitals_mcp::Endpoints {
+        resource,
+        api_resource,
+        host,
+    } = vitals_mcp::endpoints(&env("PUBLIC_URL")?)?;
 
     if let Ok(url) = std::env::var("DATABASE_OWNER_URL") {
         let owner = PgPoolOptions::new().max_connections(1).connect(&url).await?;
