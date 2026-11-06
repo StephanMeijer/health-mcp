@@ -1225,4 +1225,10 @@ async fn app_gets_the_tool_schemas() {
         ]
     );
     assert!(out.as_array().unwrap().iter().all(|t| t["inputSchema"].is_object()));
+    // Every listed tool is also callable: `Vitals::call` is a hand-written match next to `#[tool_router]`.
+    // A bad argument gets 400 (or 200 from tools without arguments), never 404.
+    for name in names {
+        let (s, out) = tool(&db, "x", name, json!({ "__probe": 1 })).await;
+        assert_ne!(s, 404, "{name} is listed but not callable: {out}");
+    }
 }
