@@ -360,6 +360,8 @@ async fn summary_keeps_measurement_types_apart() {
     let s: Value = serde_json::from_str(&v.summary(as_user(&a)).await.unwrap()).unwrap();
     assert_eq!(s["weight"]["value"]["avg_30d"], 80.5, "{s}");
     assert_eq!(s["waist"]["value"]["avg_30d"], 84.0, "{s}");
+    assert_eq!(s["weight"]["latest"]["type"], "weight", "{s}");
+    assert_eq!(s["waist"]["latest"]["type"], "waist", "{s}");
 }
 
 #[tokio::test]
