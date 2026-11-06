@@ -364,7 +364,7 @@ impl From<sqlx::Error> for StoreError {
 
 /// Inserts all frames in one transaction; returns how many rows were new.
 pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreError> {
-    let mut tx = db.app_tx(user).await?;
+    let mut tx = db.app_tx().await?;
     // No RLS: a device FK only proves the device exists, so every frame's device must be one of the user's.
     let mut ids: Vec<i32> = frames.iter().map(Frame::device_id).collect();
     ids.sort_unstable();
@@ -452,7 +452,7 @@ struct Device {
 
 async fn list_devices(State(db): State<Db>, Extension(User(user)): Extension<User>) -> Response {
     let devices = async {
-        let mut tx = db.app_tx(&user).await?;
+        let mut tx = db.app_tx().await?;
         sqlx::query_as::<_, Device>("SELECT id, model, serial FROM vitals_data.devices WHERE user_id = $1 ORDER BY id")
             .bind(&user)
             .fetch_all(&mut *tx)
@@ -496,7 +496,7 @@ async fn register_device(
             .into_response();
     }
     let id = async {
-        let mut tx = db.app_tx(&user).await?;
+        let mut tx = db.app_tx().await?;
         let id: i32 = sqlx::query_scalar(
             "INSERT INTO vitals_data.devices (user_id, model, serial) VALUES ($1, $2, $3)
              ON CONFLICT (user_id, model, serial) DO UPDATE SET model = EXCLUDED.model RETURNING id",

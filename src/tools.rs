@@ -326,7 +326,7 @@ impl Vitals {
             rows.push(Value::Object(m));
         }
         let t = p.kind.table();
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "INSERT INTO vitals_data.{t} SELECT * FROM jsonb_populate_recordset(NULL::vitals_data.{t}, $1)"
         )))
@@ -355,7 +355,7 @@ impl Vitals {
         // Column names come from Kind::fields (validated above), never from free text.
         let cols = set.keys().cloned().collect::<Vec<_>>().join(", ");
         let t = p.kind.table();
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "UPDATE vitals_data.{t} SET ({cols}) = (SELECT {cols} FROM jsonb_populate_record(NULL::vitals_data.{t}, $1))
              WHERE user_id = $3 AND time = $2 AND source = 'manual'"
@@ -389,7 +389,7 @@ impl Vitals {
             _ => return Err("give either `times`, or both `from` and `to`".into()),
         };
         let t = p.kind.table();
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(AssertSqlSafe(format!(
             "DELETE FROM vitals_data.{t}
              WHERE user_id = $4 AND source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3))"
@@ -416,7 +416,7 @@ impl Vitals {
         let (from, to) = range(p.from, p.to);
         let limit = p.limit.unwrap_or(100).clamp(1, 1000);
         let (t, dir) = (p.kind.table(), if p.oldest_first { "ASC" } else { "DESC" });
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT coalesce(json_agg(to_jsonb(r) - 'user_id' ORDER BY r.time {dir}), '[]')::text FROM (
                SELECT * FROM vitals_data.{t}
@@ -452,7 +452,7 @@ impl Vitals {
         })?;
         let (from, to) = range(p.from, p.to);
         let t = p.kind.table();
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT row_to_json(b)::text FROM (
                SELECT time_bucket($1::interval, time, $2) AS bucket, count({f}) AS n,
@@ -485,7 +485,7 @@ impl Vitals {
         Extension(parts): Extension<Parts>,
     ) -> ToolResult {
         let user = user(&parts)?;
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let id: Uuid = sqlx::query_scalar(
             "INSERT INTO vitals_data.sleep_session (user_id, source, start_at, end_at, note)
              VALUES ($1, 'manual', $2, $3, $4) RETURNING id",
@@ -509,7 +509,7 @@ impl Vitals {
         Extension(parts): Extension<Parts>,
     ) -> ToolResult {
         let user = user(&parts)?;
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n = sqlx::query(
             "UPDATE vitals_data.sleep_session
              SET start_at = coalesce($2, start_at), end_at = coalesce($3, end_at), note = coalesce($4, note)
@@ -547,7 +547,7 @@ impl Vitals {
         Extension(parts): Extension<Parts>,
     ) -> ToolResult {
         let user = user(&parts)?;
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         let n =
             sqlx::query("DELETE FROM vitals_data.sleep_session WHERE id = $1 AND user_id = $2 AND source = 'manual'")
                 .bind(p.id)
@@ -573,7 +573,7 @@ impl Vitals {
     ) -> ToolResult {
         let user = user(&parts)?;
         let (from, to) = range(p.from, p.to);
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         sqlx::query_scalar(
             "SELECT coalesce(json_agg(x ORDER BY x.start_at), '[]')::text FROM (
                SELECT s.id, s.source, s.start_at, s.end_at, s.note,
@@ -637,7 +637,7 @@ impl Vitals {
              )::text",
             parts_sql.join(", ")
         );
-        let mut tx = self.db.app_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.app_tx().await.map_err(db_err)?;
         sqlx::query_scalar(AssertSqlSafe(sql))
             .bind(user)
             .fetch_one(&mut *tx)

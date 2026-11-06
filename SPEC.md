@@ -163,7 +163,7 @@ The design:
    other role, so `set_config('role', …)` can't escalate. Neither has `BYPASSRLS`. Migrations run as the owner role.
 2. **Signed user id.** The migration creates a random secret in `vitals_private.secret`, which no login role can read.
    `vitals_private.sign(user_id)` is `SECURITY DEFINER` and only `vitals_app` may execute it.
-   Per request the server sets the GUCs `vitals.user_id` and `vitals.user_sig` (transaction-local).
+   For each `sql_query` the server sets the GUCs `vitals.user_id` and `vitals.user_sig` (transaction-local).
    `vitals.current_user_id()` (`SECURITY DEFINER`) checks the HMAC and raises an error if it doesn't match.
    A query can still set a different user id, but it can't produce a valid signature for it.
 3. **`vitals_app`:** every query filters on `user_id = $user` itself (the user from the verified token), and writes
