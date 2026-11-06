@@ -71,6 +71,24 @@ async fn sql(v: &Vitals, user: &str, q: &str) -> Result<Value, String> {
 }
 
 #[tokio::test]
+async fn ready_with_both_pools_up() {
+    let (_, db, _) = setup().await;
+    assert!(db.ready().await);
+}
+
+#[tokio::test]
+async fn ready_while_every_connection_is_busy() {
+    let (_, db, _) = setup().await;
+    let app = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/vitals"))
+        .await
+        .unwrap();
+    let _held = app.acquire().await.unwrap();
+    assert!(Db { app, ..db }.ready().await, "a busy pool still reaches the database");
+}
+
+#[tokio::test]
 async fn readings_round_trip() {
     let (v, _, _) = setup().await;
     let a = uid("alice");
