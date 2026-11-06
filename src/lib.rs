@@ -4,8 +4,10 @@ pub mod ingest;
 pub mod tools;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
+use axum::http::StatusCode;
 use axum::{Router, middleware, routing::get};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
@@ -37,6 +39,31 @@ pub fn endpoints(public_url: &str) -> anyhow::Result<Endpoints> {
     })
 }
 
+/// Requests `/mcp` and `/api` run at once; more wait their turn. A waiting request hasn't read its body yet, so this
+/// also bounds the memory ingest bodies (up to 32 MiB each) can take.
+pub const MAX_CONCURRENT_REQUESTS: usize = 16;
+/// Above the 30 s statement timeout, so a slow query fails with its own error first. Includes time spent waiting.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Bounds the work of every route added to `router` so far (not its fallback): `max` requests at once across all of
+/// them (one shared semaphore), each answered `408` after `timeout`. The slot is taken inside the timed future, so
+/// time spent waiting for one counts towards `timeout`.
+fn limits<S: Clone + Send + Sync + 'static>(router: Router<S>, max: usize, timeout: Duration) -> Router<S> {
+    let slots = Arc::new(tokio::sync::Semaphore::new(max));
+    router
+        .route_layer(middleware::from_fn(move |req, next: middleware::Next| {
+            let slots = slots.clone();
+            async move {
+                let _slot = slots.acquire_owned().await.expect("never closed");
+                next.run(req).await
+            }
+        }))
+        .route_layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            timeout,
+        ))
+}
+
 /// All routes. `verifier` guards `/mcp`, `api_verifier` guards `/api`: each has its own audience,
 /// so MCP tokens don't work on `/api` and vice versa. `host` is the only allowed `Host` for `/mcp`.
 pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier: Arc<auth::Verifier>) -> Router {
@@ -52,11 +79,13 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
             .with_allowed_hosts([host]),
     );
 
-    Router::new()
+    let routes = Router::new()
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn_with_state(verifier.clone(), auth::require))
         // After the MCP auth layer, which only wraps routes added before it.
-        .nest("/api", api)
+        .nest("/api", api);
+    // Only /mcp and /api: discovery and health checks never queue behind them.
+    limits(routes, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT)
         .route("/.well-known/oauth-protected-resource", get(auth::metadata))
         .route("/.well-known/oauth-protected-resource/mcp", get(auth::metadata))
         .route(
@@ -70,11 +99,73 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
-    use axum::http::{Request, StatusCode, header};
+    use axum::http::{Request, header};
     use jsonwebtoken::{EncodingKey, Header, encode, jwk::Jwk, jwk::JwkSet};
     use tower::ServiceExt;
 
     use super::*;
+
+    #[tokio::test]
+    async fn limits_time_out_and_bound_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let (running, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let slow = {
+            let (running, peak) = (running.clone(), peak.clone());
+            get(move || async move {
+                peak.fetch_max(running.fetch_add(1, SeqCst) + 1, SeqCst);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                running.fetch_sub(1, SeqCst);
+            })
+        };
+        let get_slow = |app: Router| async move {
+            let res = app
+                .oneshot(Request::get("/slow").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            res.status()
+        };
+
+        let one_at_a_time = limits(Router::new().route("/slow", slow.clone()), 1, Duration::from_secs(5));
+        let statuses = tokio::join!(get_slow(one_at_a_time.clone()), get_slow(one_at_a_time));
+        assert_eq!(statuses, (StatusCode::OK, StatusCode::OK));
+        assert_eq!(peak.load(SeqCst), 1, "the second request ran while the first did");
+
+        let impatient = limits(Router::new().route("/slow", slow.clone()), 1, Duration::from_millis(10));
+        assert_eq!(get_slow(impatient).await, StatusCode::REQUEST_TIMEOUT);
+
+        // 100 ms waiting for the slot plus 100 ms running: the wait counts towards the timeout.
+        let queued = limits(Router::new().route("/slow", slow), 1, Duration::from_millis(150));
+        let statuses = tokio::join!(get_slow(queued.clone()), get_slow(queued));
+        assert_eq!(statuses, (StatusCode::OK, StatusCode::REQUEST_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn limits_cover_nested_routes_but_not_the_fallback() {
+        let slow = || Router::new().route("/slow", get(|| tokio::time::sleep(Duration::from_millis(100))));
+        let app = limits(
+            Router::new().nest_service("/mcp", slow()).nest("/api", slow()),
+            1,
+            Duration::from_millis(150),
+        );
+        let status = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::get(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        // Both nested routes share the one slot, so the second waits and times out; the fallback never waits.
+        let statuses = tokio::join!(status("/mcp/slow"), status("/api/slow"), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::timeout(Duration::from_millis(50), status("/unknown")).await
+        });
+        assert_eq!(
+            statuses,
+            (StatusCode::OK, StatusCode::REQUEST_TIMEOUT, Ok(StatusCode::NOT_FOUND))
+        );
+    }
 
     const SECRET: &str = "test-secret-at-least-32-bytes-long!!";
     const ISS: &str = "https://auth.example.com";
