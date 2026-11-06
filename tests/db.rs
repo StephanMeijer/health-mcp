@@ -594,14 +594,20 @@ async fn ingest_stores_once_and_shows_up_in_tools() {
     let rows = sql(
         &v,
         &a,
-        "SELECT (SELECT samples FROM ecg) AS ecg, (SELECT z FROM acc) AS z, (SELECT level FROM device_battery) AS level,
-                (SELECT event FROM device_event) AS event, (SELECT rr_ms FROM heart_rate) AS rr_ms",
+        "SELECT (SELECT array_agg(uv ORDER BY time) FROM ecg) AS ecg, (SELECT array_agg(z ORDER BY time) FROM acc) AS z,
+                (SELECT array_agg(to_char(time AT TIME ZONE 'UTC', 'SS.US') ORDER BY time) FROM ecg) AS ecg_t,
+                (SELECT array_agg(to_char(time AT TIME ZONE 'UTC', 'SS.US') ORDER BY time) FROM acc) AS acc_t,
+                (SELECT level FROM device_battery) AS level, (SELECT event FROM device_event) AS event,
+                (SELECT rr_ms FROM heart_rate) AS rr_ms",
     )
     .await
     .unwrap();
     assert_eq!(
         rows["rows"][0],
-        json!({"ecg": [-12, 40, 7], "z": [-1000, -999], "level": 87, "event": "connected", "rr_ms": [980, 990]})
+        json!({"ecg": [-12, 40, 7], "z": [-1000, -999],
+               // One row per sample: sample i at time + i / sample_rate, rounded to µs.
+               "ecg_t": ["00.000000", "00.007692", "00.015385"], "acc_t": ["00.000000", "00.005000"],
+               "level": 87, "event": "connected", "rr_ms": [980, 990]})
     );
     // Another user sees none of it.
     let b = uid("bob");
@@ -776,7 +782,7 @@ async fn ingest_dedups_into_compressed_chunks() {
     let (_, db, owner) = setup().await;
     let a = uid("alice");
     let d = register(&db, &a, "Polar H10", "244E7234").await;
-    // A day no other test writes to, so compressing its chunks can't disturb them.
+    // An hour no other test writes to, so compressing its chunks can't disturb them.
     let frame = |kind: &str, sec: u32| {
         let t = format!("2026-09-15T08:00:{sec:02}Z");
         match kind {
@@ -790,11 +796,12 @@ async fn ingest_dedups_into_compressed_chunks() {
     let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
     assert_eq!(post(batch.clone()).await, (200, json!({"frames": 2, "inserted": 2})));
 
-    // The 8-day compression policy may compress the same chunk concurrently (it runs right after migrating a
+    // The compression policy may compress the same chunk concurrently (it runs right after migrating a
     // fresh DB); compress_chunk then raises 42710 despite if_not_compressed. The assertion below is the real check.
     sqlx::query(
         "DO $$ DECLARE c regclass; BEGIN
-           FOR c IN SELECT show_chunks(t, older_than => '2026-09-16'::timestamptz, newer_than => '2026-09-15'::timestamptz)
+           FOR c IN SELECT show_chunks(t, older_than => '2026-09-15 09:00Z'::timestamptz,
+                                        newer_than => '2026-09-15 08:00Z'::timestamptz)
                       FROM unnest('{vitals_data.ecg,vitals_data.acc}'::regclass[]) t LOOP
              BEGIN PERFORM compress_chunk(c, if_not_compressed => true);
              EXCEPTION WHEN duplicate_object THEN NULL;
@@ -808,7 +815,7 @@ async fn ingest_dedups_into_compressed_chunks() {
     let compressed: bool = sqlx::query_scalar(
         "SELECT bool_and(is_compressed) FROM timescaledb_information.chunks
           WHERE hypertable_schema = 'vitals_data' AND hypertable_name IN ('ecg', 'acc')
-            AND range_start = '2026-09-15'",
+            AND range_start = '2026-09-15 08:00Z'",
     )
     .fetch_one(&owner)
     .await

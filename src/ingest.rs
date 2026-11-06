@@ -245,6 +245,25 @@ pub fn decode(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError
     Ok(frames)
 }
 
+macro_rules! ecg_sql {
+    () => {
+        "INSERT INTO vitals_data.ecg (time, user_id, source, device_id, uv)
+         SELECT f.time + (s.i - 1) * interval '1 second' / f.sample_rate, $2, 'app', f.device_id, s.uv
+         FROM jsonb_to_recordset($1) AS f(time timestamptz, device_id int, sample_rate smallint, samples int[])
+         CROSS JOIN LATERAL unnest(f.samples) WITH ORDINALITY AS s(uv, i)"
+    };
+}
+
+macro_rules! acc_sql {
+    () => {
+        "INSERT INTO vitals_data.acc (time, user_id, source, device_id, x, y, z)
+         SELECT f.time + (s.i - 1) * interval '1 second' / f.sample_rate, $2, 'app', f.device_id, s.x, s.y, s.z
+         FROM jsonb_to_recordset($1)
+           AS f(time timestamptz, device_id int, sample_rate smallint, x smallint[], y smallint[], z smallint[])
+         CROSS JOIN LATERAL unnest(f.x, f.y, f.z) WITH ORDINALITY AS s(x, y, z, i)"
+    };
+}
+
 /// Per frame kind: set-based inserts; only the first statement's rows count as inserted frames.
 /// `jsonb_to_recordset` turns JSON arrays into Postgres arrays.
 const INSERTS: [(&str, &[&str]); 8] = [
@@ -259,20 +278,18 @@ const INSERTS: [(&str, &[&str]); 8] = [
     ),
     (
         "ecg",
+        // One row per sample, sample i (1-based) at time + (i - 1) / sample_rate s. First samples go in their own
+        // statement so its row count is the number of new frames: the app role can insert but not read (RETURNING).
         &[
-            "INSERT INTO vitals_data.ecg (time, user_id, source, device_id, sample_rate, samples)
-             SELECT time, $2, 'app', device_id, sample_rate, samples FROM jsonb_to_recordset($1)
-               AS f(time timestamptz, device_id int, sample_rate smallint, samples int[])
-             ON CONFLICT DO NOTHING",
+            concat!(ecg_sql!(), " WHERE s.i = 1 ON CONFLICT DO NOTHING"),
+            concat!(ecg_sql!(), " WHERE s.i > 1 ON CONFLICT DO NOTHING"),
         ],
     ),
     (
         "acc",
         &[
-            "INSERT INTO vitals_data.acc (time, user_id, source, device_id, sample_rate, x, y, z)
-             SELECT time, $2, 'app', device_id, sample_rate, x, y, z FROM jsonb_to_recordset($1)
-               AS f(time timestamptz, device_id int, sample_rate smallint, x smallint[], y smallint[], z smallint[])
-             ON CONFLICT DO NOTHING",
+            concat!(acc_sql!(), " WHERE s.i = 1 ON CONFLICT DO NOTHING"),
+            concat!(acc_sql!(), " WHERE s.i > 1 ON CONFLICT DO NOTHING"),
         ],
     ),
     (
