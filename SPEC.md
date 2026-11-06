@@ -315,4 +315,6 @@ Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/o
   An unknown frame `type` is invalid too, so deploy a server that knows a new type before an app that sends it.
 - App sleep deduplicates on `start_at`: if the tracker later reports a night with a different start, it's a second session.
 - `pg_stat_activity` shows the *text* of other users' running `sql_query` calls (it's the same reader role), but not their data.
-- Not tested against a real Authelia token or the claude.ai connector flow; only a locally minted `at+jwt` was used.
+- Real Authelia tokens work in production for both clients: the claude.ai connector on `/mcp` and the vitals-android app
+  on `/api`. That MCP tokens are rejected on `/api` and app tokens on `/mcp` is tested only with locally minted `at+jwt`
+  tokens, not with real ones.
