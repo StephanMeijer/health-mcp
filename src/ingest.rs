@@ -20,6 +20,31 @@ use crate::tools::SleepStage;
 pub const MAX_BODY: usize = 32 << 20;
 pub const MAX_FRAMES: usize = 5000;
 
+/// How `ecg` and `acc` arrays are sent: as values, or as differences from the previous value (the first from 0).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoding {
+    #[default]
+    Absolute,
+    Delta,
+}
+
+impl Encoding {
+    fn is_absolute(&self) -> bool {
+        *self == Encoding::Absolute
+    }
+}
+
+/// Running sum in place; `None` on overflow.
+fn undelta<T: Copy + Default>(v: &mut [T], add: fn(T, T) -> Option<T>) -> Option<()> {
+    let mut sum = T::default();
+    for x in v {
+        sum = add(sum, *x)?;
+        *x = sum;
+    }
+    Some(())
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Frame {
@@ -34,12 +59,16 @@ pub enum Frame {
         device_id: i32,
         time: DateTime<Utc>,
         sample_rate: i16,
+        #[serde(default, skip_serializing_if = "Encoding::is_absolute")]
+        encoding: Encoding,
         samples: Vec<i32>,
     },
     Acc {
         device_id: i32,
         time: DateTime<Utc>,
         sample_rate: i16,
+        #[serde(default, skip_serializing_if = "Encoding::is_absolute")]
+        encoding: Encoding,
         x: Vec<i16>,
         y: Vec<i16>,
         z: Vec<i16>,
@@ -81,6 +110,25 @@ pub enum Frame {
 }
 
 impl Frame {
+    /// Rebuilds delta-encoded arrays into absolute values, so everything after decoding sees only those.
+    fn absolute(&mut self) -> Result<(), &'static str> {
+        match self {
+            Frame::Ecg { encoding, samples, .. } if *encoding == Encoding::Delta => {
+                undelta(samples, i32::checked_add).ok_or("ecg samples must fit in i32 after delta decoding")?;
+                *encoding = Encoding::Absolute;
+            }
+            Frame::Acc { encoding, x, y, z, .. } if *encoding == Encoding::Delta => {
+                [x, y, z]
+                    .into_iter()
+                    .try_for_each(|v| undelta(v, i16::checked_add))
+                    .ok_or("acc values must fit in i16 after delta decoding")?;
+                *encoding = Encoding::Absolute;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Mirrors the table CHECKs, so a bad frame is reported by index instead of as a failed INSERT.
     fn check(&self) -> Result<(), &'static str> {
         let (ok, why) = match self {
@@ -167,11 +215,13 @@ pub enum DecodeError {
 
 pub fn decode(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError> {
     let mut frames = Vec::new();
-    let push = |frames: &mut Vec<Frame>, f: Frame| {
+    let push = |frames: &mut Vec<Frame>, mut f: Frame| {
         if frames.len() == MAX_FRAMES {
             return Err(DecodeError::TooMany);
         }
-        f.check().map_err(|e| DecodeError::Invalid(frames.len(), e.into()))?;
+        f.absolute()
+            .and_then(|()| f.check())
+            .map_err(|e| DecodeError::Invalid(frames.len(), e.into()))?;
         frames.push(f);
         Ok(())
     };
@@ -476,12 +526,14 @@ mod tests {
                 device_id: d(),
                 time: t,
                 sample_rate: 130,
+                encoding: Encoding::Absolute,
                 samples: vec![-12, 40, 7],
             },
             Frame::Acc {
                 device_id: d(),
                 time: t,
                 sample_rate: 200,
+                encoding: Encoding::Absolute,
                 x: vec![1],
                 y: vec![2],
                 z: vec![-1000],
@@ -577,6 +629,10 @@ mod tests {
             r#"{"type":"sleep","device_id":1,"start_at":"2026-11-04T00:00:00Z","end_at":"2026-11-04T07:00:00Z",
                 "stages":[{"time":"2026-11-04T00:00:00Z","stage":"n3","duration_s":60}]}"#,
             r#"{"type":"recharge","device_id":1,"night":"2026-11-04","status":7,"ans_charge":0}"#,
+            r#"{"type":"ecg","device_id":1,"time":"2026-11-04T10:00:00Z","sample_rate":130,"encoding":"zigzag","samples":[1]}"#,
+            r#"{"type":"acc","device_id":1,"time":"2026-11-04T10:00:00Z","sample_rate":200,"encoding":"delta",
+                "x":[32000,1000],"y":[0,0],"z":[0,0]}"#,
+            r#"{"type":"hr","device_id":1,"time":"2026-11-04T10:00:00Z","bpm":60,"encoding":"delta"}"#,
         ] {
             assert!(
                 matches!(
@@ -587,6 +643,41 @@ mod tests {
             );
         }
         assert_eq!(decode("application/json", b"[]"), Err(DecodeError::UnsupportedType));
+    }
+
+    #[test]
+    fn delta_frames_decode_to_absolute() {
+        let t: DateTime<Utc> = "2026-11-04T10:00:00Z".parse().unwrap();
+        let ecg = |encoding, samples| Frame::Ecg {
+            device_id: 1,
+            time: t,
+            sample_rate: 130,
+            encoding,
+            samples,
+        };
+        let acc = |encoding, x, y, z| Frame::Acc {
+            device_id: 1,
+            time: t,
+            sample_rate: 200,
+            encoding,
+            x,
+            y,
+            z,
+        };
+        let sent = [
+            ecg(Encoding::Delta, vec![-12, 52, -33]),
+            ecg(Encoding::Delta, vec![]),
+            acc(Encoding::Delta, vec![1, 2], vec![-1000, 0], vec![32000, -32000]),
+        ];
+        let stored = vec![
+            ecg(Encoding::Absolute, vec![-12, 40, 7]),
+            ecg(Encoding::Absolute, vec![]),
+            acc(Encoding::Absolute, vec![1, 3], vec![-1000, -1000], vec![32000, 0]),
+        ];
+        assert_eq!(decode("application/x-ndjson", &jsonl(&sent)).unwrap(), stored);
+        assert_eq!(decode("application/cbor-seq", &cbor(&sent)).unwrap(), stored);
+        // Absolute frames serialize without the field, so the JSON handed to Postgres is unchanged.
+        assert!(!serde_json::to_string(&stored[0]).unwrap().contains("encoding"));
     }
 
     #[test]
