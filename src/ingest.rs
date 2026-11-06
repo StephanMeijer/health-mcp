@@ -20,6 +20,11 @@ use crate::tools::{SleepStage, ToolError, Vitals};
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
 pub const MAX_FRAMES: usize = 5000;
+/// Oldest frame time accepted: the phone's 7-day outbox plus a day of slack. Rejecting implausible times keeps a
+/// buggy client from spreading one batch over thousands of hourly ecg/acc chunks.
+pub const MAX_AGE: TimeDelta = TimeDelta::days(8);
+/// Newest frame time accepted, for clock skew between phone and server.
+pub const MAX_SKEW: TimeDelta = TimeDelta::hours(1);
 /// Tool arguments are small; this also applies after decompression.
 pub const MAX_TOOL_BODY: usize = 1 << 20;
 
@@ -132,6 +137,36 @@ impl Frame {
         Ok(())
     }
 
+    /// Every timestamp in the frame lies in `now - MAX_AGE ..= now + MAX_SKEW` (a recharge `night` by date, ±1 day).
+    fn recent(&self, now: DateTime<Utc>) -> Result<(), &'static str> {
+        let (oldest, newest) = (now - MAX_AGE, now + MAX_SKEW);
+        let ok = |t: &DateTime<Utc>| (oldest..=newest).contains(t);
+        let fits = match self {
+            Frame::Hr { time, .. }
+            | Frame::Ecg { time, .. }
+            | Frame::Acc { time, .. }
+            | Frame::Battery { time, .. }
+            | Frame::Status { time, .. }
+            | Frame::SkinTemp { time, .. } => ok(time),
+            Frame::Sleep {
+                start_at,
+                end_at,
+                stages,
+                ..
+            } => ok(start_at) && ok(end_at) && stages.iter().all(|g| ok(&g.time)),
+            // `night` is the user's local date, so allow a day either side for any UTC offset.
+            Frame::Recharge { night, .. } => {
+                let day = TimeDelta::days(1);
+                (oldest.date_naive() - day..=newest.date_naive() + day).contains(night)
+            }
+        };
+        if fits {
+            Ok(())
+        } else {
+            Err("times must be at most 8 days old and at most 1 hour in the future")
+        }
+    }
+
     /// Mirrors the table CHECKs, so a bad frame is reported by index instead of as a failed INSERT.
     fn check(&self) -> Result<(), &'static str> {
         let (ok, why) = match self {
@@ -216,13 +251,15 @@ pub enum DecodeError {
     Invalid(usize, String),
 }
 
-pub fn decode(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError> {
+/// `now` bounds the frame times (see [`MAX_AGE`]); the handler passes the current time.
+pub fn decode(content_type: &str, body: &[u8], now: DateTime<Utc>) -> Result<Vec<Frame>, DecodeError> {
     let mut frames = Vec::new();
     let push = |frames: &mut Vec<Frame>, mut f: Frame| {
         if frames.len() == MAX_FRAMES {
             return Err(DecodeError::TooMany);
         }
         f.absolute()
+            .and_then(|()| f.recent(now))
             .and_then(|()| f.check())
             .map_err(|e| DecodeError::Invalid(frames.len(), e.into()))?;
         frames.push(f);
@@ -399,17 +436,24 @@ pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreEr
     Ok(inserted)
 }
 
+/// The time ingest checks frame times against, instead of the system clock. Only server-side code can add a request
+/// extension, so clients can't set it; tests use it to ingest frames dated around a fixed day.
+#[derive(Clone, Copy)]
+pub struct Clock(pub DateTime<Utc>);
+
 async fn ingest(
     State(db): State<Db>,
     Extension(User(user)): Extension<User>,
+    clock: Option<Extension<Clock>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let now = clock.map_or_else(Utc::now, |Extension(Clock(t))| t);
     let ct = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let frames = match decode(ct, &body) {
+    let frames = match decode(ct, &body, now) {
         Ok(f) => f,
         Err(DecodeError::UnsupportedType) => {
             return (
@@ -570,6 +614,15 @@ pub fn router<S: Clone + Send + Sync + 'static>(db: Db) -> Router<S> {
 mod tests {
     use super::*;
 
+    /// The fixtures are from 2026-11-04 (a night ending 18:00); decode them as if it were then.
+    fn now() -> DateTime<Utc> {
+        "2026-11-04T18:00:00Z".parse().unwrap()
+    }
+
+    fn dec(content_type: &str, body: &[u8]) -> Result<Vec<Frame>, DecodeError> {
+        decode(content_type, body, now())
+    }
+
     fn fixtures() -> Vec<Frame> {
         let t = "2026-11-04T10:00:00.123456Z".parse().unwrap();
         let d = || 1;
@@ -653,9 +706,9 @@ mod tests {
     #[test]
     fn jsonl_and_cbor_decode_to_the_same_frames() {
         let f = fixtures();
-        assert_eq!(decode("application/x-ndjson; charset=utf-8", &jsonl(&f)).unwrap(), f);
-        assert_eq!(decode("application/cbor-seq", &cbor(&f)).unwrap(), f);
-        assert_eq!(decode("application/x-ndjson", b"").unwrap(), vec![]);
+        assert_eq!(dec("application/x-ndjson; charset=utf-8", &jsonl(&f)).unwrap(), f);
+        assert_eq!(dec("application/cbor-seq", &cbor(&f)).unwrap(), f);
+        assert_eq!(dec("application/x-ndjson", b"").unwrap(), vec![]);
     }
 
     #[test]
@@ -663,22 +716,22 @@ mod tests {
         let body = b"{\"type\":\"battery\",\"device_id\":1,\"time\":\"2026-11-04T10:00:00Z\",\"level\":5}\n\
                      {\"type\":\"battery\",\"device_id\":1,\"time\":\"2026-11-04T10:00:00Z\",\"level\":500}\n";
         assert!(matches!(
-            decode("application/x-ndjson", body),
+            dec("application/x-ndjson", body),
             Err(DecodeError::Invalid(1, _))
         ));
         assert!(matches!(
-            decode("application/x-ndjson", b"{\"type\":\"nope\"}"),
+            dec("application/x-ndjson", b"{\"type\":\"nope\"}"),
             Err(DecodeError::Invalid(0, _))
         ));
         let unknown = br#"{"type":"status","device_id":1,"time":"2026-11-04T10:00:00Z","event":"x","extra":1}"#;
         assert!(matches!(
-            decode("application/x-ndjson", unknown),
+            dec("application/x-ndjson", unknown),
             Err(DecodeError::Invalid(0, _))
         ));
         let mut truncated = cbor(&fixtures());
         truncated.pop();
         assert!(matches!(
-            decode("application/cbor-seq", &truncated),
+            dec("application/cbor-seq", &truncated),
             Err(DecodeError::Invalid(7, _))
         ));
         for bad in [
@@ -694,13 +747,13 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    decode("application/x-ndjson", bad.replace('\n', "").as_bytes()),
+                    dec("application/x-ndjson", bad.replace('\n', "").as_bytes()),
                     Err(DecodeError::Invalid(0, _))
                 ),
                 "{bad}"
             );
         }
-        assert_eq!(decode("application/json", b"[]"), Err(DecodeError::UnsupportedType));
+        assert_eq!(dec("application/json", b"[]"), Err(DecodeError::UnsupportedType));
     }
 
     #[test]
@@ -732,8 +785,8 @@ mod tests {
             ecg(Encoding::Absolute, vec![]),
             acc(Encoding::Absolute, vec![1, 3], vec![-1000, -1000], vec![32000, 0]),
         ];
-        assert_eq!(decode("application/x-ndjson", &jsonl(&sent)).unwrap(), stored);
-        assert_eq!(decode("application/cbor-seq", &cbor(&sent)).unwrap(), stored);
+        assert_eq!(dec("application/x-ndjson", &jsonl(&sent)).unwrap(), stored);
+        assert_eq!(dec("application/cbor-seq", &cbor(&sent)).unwrap(), stored);
         // Absolute frames serialize without the field, so the JSON handed to Postgres is unchanged.
         assert!(!serde_json::to_string(&stored[0]).unwrap().contains("encoding"));
     }
@@ -743,10 +796,60 @@ mod tests {
         let f: Vec<Frame> = (0..=MAX_FRAMES)
             .map(|_| Frame::Status {
                 device_id: 1,
-                time: Utc::now(),
+                time: now(),
                 event: "x".into(),
             })
             .collect();
-        assert_eq!(decode("application/x-ndjson", &jsonl(&f)), Err(DecodeError::TooMany));
+        assert_eq!(dec("application/x-ndjson", &jsonl(&f)), Err(DecodeError::TooMany));
+    }
+
+    #[test]
+    fn rejects_frames_outside_the_time_window() {
+        let at = |t: DateTime<Utc>| {
+            format!(
+                r#"{{"type":"battery","device_id":1,"time":"{}","level":5}}"#,
+                t.to_rfc3339()
+            )
+        };
+        let sleep = |start: DateTime<Utc>| {
+            let end = (start + TimeDelta::minutes(30)).to_rfc3339();
+            format!(
+                r#"{{"type":"sleep","device_id":1,"start_at":"{}","end_at":"{end}"}}"#,
+                start.to_rfc3339()
+            )
+        };
+        let night =
+            |d: NaiveDate| format!(r#"{{"type":"recharge","device_id":1,"night":"{d}","status":4,"ans_charge":0}}"#);
+        let n = now();
+        let ok = [
+            at(n - MAX_AGE),
+            at(n + MAX_SKEW),
+            sleep(n - TimeDelta::hours(8)),
+            night((n - MAX_AGE - TimeDelta::days(1)).date_naive()),
+            night((n + TimeDelta::days(1)).date_naive()),
+        ];
+        for f in ok {
+            assert!(dec("application/x-ndjson", f.as_bytes()).is_ok(), "{f}");
+        }
+        let second = TimeDelta::seconds(1);
+        let bad = [
+            at(n - MAX_AGE - second),
+            at(n + MAX_SKEW + second),
+            at("2020-01-01T00:00:00Z".parse().unwrap()),
+            sleep(n - MAX_AGE - second),
+            // ends past the skew allowance
+            sleep(n + MAX_SKEW - TimeDelta::minutes(10)),
+            night((n - MAX_AGE - TimeDelta::days(2)).date_naive()),
+            night((n + TimeDelta::days(2)).date_naive()),
+        ];
+        for f in bad {
+            assert!(
+                matches!(
+                    dec("application/x-ndjson", f.as_bytes()),
+                    Err(DecodeError::Invalid(0, _))
+                ),
+                "{f}"
+            );
+        }
     }
 }
