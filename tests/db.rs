@@ -193,13 +193,13 @@ async fn validation_errors_reach_the_model() {
     assert!(too_high.unwrap_err().to_string().contains("check constraint"));
     let wrong_field = v
         .reading_add(
-            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0}]})),
+            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-10-01T07:00:00Z", "value": 80.0}]})),
             as_user(&a),
         )
         .await;
     assert!(wrong_field.unwrap_err().to_string().contains("does not belong"));
     let bad_agg = v
-        .reading_aggregate(p(json!({"kind": "body", "field": "bpm"})), as_user(&a))
+        .reading_aggregate(p(json!({"kind": "weight", "field": "bpm"})), as_user(&a))
         .await;
     assert!(bad_agg.is_err());
     // A source outside the enum is an argument error, not an empty result.
@@ -231,30 +231,117 @@ async fn unknown_fields_are_rejected_not_dropped() {
     let a = uid("alice");
     let typo = v
         .reading_add(
-            p(json!({"kind": "body", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0, "fatpct": 21.5}]})),
+            p(json!({"kind": "weight", "readings": [{"time": "2026-10-01T07:00:00Z", "value": 80.0, "vaule": 21.5}]})),
             as_user(&a),
         )
         .await;
-    assert!(typo.unwrap_err().to_string().contains("fatpct"));
-    assert_eq!(sql(&v, &a, "SELECT * FROM body").await.unwrap()["rows"], json!([]));
+    assert!(typo.unwrap_err().to_string().contains("vaule"));
+    assert_eq!(
+        sql(&v, &a, "SELECT * FROM measurement").await.unwrap()["rows"],
+        json!([])
+    );
 
     v.reading_add(
-        p(json!({"kind": "body", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0}]})),
+        p(json!({"kind": "weight", "readings": [{"time": "2026-10-01T07:00:00Z", "value": 80.0}]})),
         as_user(&a),
     )
     .await
     .unwrap();
     let upd = v
         .reading_update(
-            p(json!({"kind": "body", "time": "2026-10-01T07:00:00Z", "set": {"weight_kg": 81.0, "weightkg": 82.0}})),
+            p(json!({"kind": "weight", "time": "2026-10-01T07:00:00Z", "set": {"value": 81.0, "vaule": 82.0}})),
             as_user(&a),
         )
         .await;
-    assert!(upd.unwrap_err().to_string().contains("weightkg"));
+    assert!(upd.unwrap_err().to_string().contains("vaule"));
     assert_eq!(
-        sql(&v, &a, "SELECT weight_kg FROM body").await.unwrap()["rows"],
-        json!([{"weight_kg": 80}])
+        sql(&v, &a, "SELECT value FROM measurement").await.unwrap()["rows"],
+        json!([{"value": 80}])
     );
+}
+
+#[tokio::test]
+async fn measurements_are_one_row_per_value() {
+    let (v, db, _) = setup().await;
+    let a = uid("alice");
+    let t = "2026-10-01T07:00:00Z";
+    for (kind, value) in [
+        ("weight", 80.5),
+        ("waist", 84.0),
+        ("systolic", 120.0),
+        ("diastolic", 80.0),
+    ] {
+        v.reading_add(
+            p(json!({"kind": kind, "readings": [{"time": t, "value": value}]})),
+            as_user(&a),
+        )
+        .await
+        .unwrap();
+    }
+    // Deleting the waist leaves the weight and blood pressure taken at the same time.
+    let del = v
+        .reading_delete(p(json!({"kind": "waist", "times": [t]})), as_user(&a))
+        .await
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&del).unwrap()["deleted"], 1);
+    v.reading_update(
+        p(json!({"kind": "weight", "time": t, "set": {"value": 81.0}})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sql(&v, &a, "SELECT type, value, unit FROM measurement ORDER BY type")
+            .await
+            .unwrap()["rows"],
+        json!([
+            {"type": "diastolic", "value": 80, "unit": "mmHg"},
+            {"type": "systolic", "value": 120, "unit": "mmHg"},
+            {"type": "weight", "value": 81, "unit": "kg"}
+        ])
+    );
+    let list: Value = serde_json::from_str(
+        &v.reading_list(
+            p(json!({"kind": "systolic", "from": "2026-09-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["value"], 120.0);
+    let agg: Value = serde_json::from_str(
+        &v.reading_aggregate(
+            p(json!({"kind": "weight", "field": "value", "from": "2026-09-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(agg["buckets"][0]["n"], 1);
+
+    // The trigger checks the type's range; the foreign key pins the unit, also for direct inserts.
+    let too_heavy = v
+        .reading_add(
+            p(json!({"kind": "weight", "readings": [{"time": "2026-10-02T07:00:00Z", "value": 900}]})),
+            as_user(&a),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(too_heavy.contains("outside"), "{too_heavy}");
+    let wrong_unit = sqlx::query(
+        "INSERT INTO vitals_data.measurement (time, user_id, source, type, value, unit)
+         VALUES (now(), $1, 'manual', 'weight', 80, 'lb')",
+    )
+    .bind(&a)
+    .execute(&db.app)
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_unit.contains("foreign key"), "{wrong_unit}");
 }
 
 #[tokio::test]

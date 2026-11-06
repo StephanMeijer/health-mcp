@@ -1,6 +1,6 @@
 # vitals-mcp
 
-A remote MCP server that stores and queries personal vitals (heart rate, HRV, blood pressure, body metrics and sleep) in TimescaleDB.
+A remote MCP server that stores and queries personal vitals (heart rate, HRV, body measurements such as weight, waist and blood pressure, and sleep) in TimescaleDB.
 It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and offers typed tools plus a read-only SQL tool.
 Raw tracker data (e.g. a Polar H10 chest strap) arrives through an ingest API (`POST /api/v1/ingest`),
 from devices the app registers per user (`/api/v1/devices`).
