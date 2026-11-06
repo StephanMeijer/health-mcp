@@ -306,7 +306,7 @@ impl Vitals {
     }
 
     #[tool(
-        description = "Log one or more manual readings of one kind (heart_rate, hrv, blood_pressure, body). Units: bpm, ms, mmHg, kg, %, °C."
+        description = "Log 1–1000 manual readings of one kind (heart_rate, hrv, blood_pressure, body). Units: bpm, ms, mmHg, kg, %, °C."
     )]
     pub async fn reading_add(
         &self,
