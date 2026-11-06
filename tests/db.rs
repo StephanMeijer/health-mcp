@@ -68,6 +68,7 @@ async fn sql(v: &Vitals, user: &str, q: &str) -> Result<Value, String> {
     v.sql_query(p(json!({ "sql": q })), as_user(user))
         .await
         .map(|s| serde_json::from_str(&s).unwrap())
+        .map_err(|e| e.to_string())
 }
 
 #[tokio::test]
@@ -132,14 +133,14 @@ async fn validation_errors_reach_the_model() {
             as_user(&a),
         )
         .await;
-    assert!(too_high.unwrap_err().contains("check constraint"));
+    assert!(too_high.unwrap_err().to_string().contains("check constraint"));
     let wrong_field = v
         .reading_add(
             p(json!({"kind": "heart_rate", "readings": [{"time": "2026-10-01T07:00:00Z", "weight_kg": 80.0}]})),
             as_user(&a),
         )
         .await;
-    assert!(wrong_field.unwrap_err().contains("does not belong"));
+    assert!(wrong_field.unwrap_err().to_string().contains("does not belong"));
     let bad_agg = v
         .reading_aggregate(p(json!({"kind": "body", "field": "bpm"})), as_user(&a))
         .await;
@@ -155,14 +156,14 @@ async fn validation_errors_reach_the_model() {
                 as_user(&a),
             )
             .await;
-        assert!(empty.unwrap_err().contains("nothing to update"));
+        assert!(empty.unwrap_err().to_string().contains("nothing to update"));
     }
     // Half a range, or no selection at all, deletes nothing.
     for args in [
         json!({"kind": "heart_rate", "from": "2026-10-01T00:00:00Z"}),
         json!({"kind": "heart_rate"}),
     ] {
-        let err = v.reading_delete(p(args), as_user(&a)).await.unwrap_err();
+        let err = v.reading_delete(p(args), as_user(&a)).await.unwrap_err().to_string();
         assert!(err.contains("give either"), "{err}");
     }
 }
@@ -177,7 +178,7 @@ async fn unknown_fields_are_rejected_not_dropped() {
             as_user(&a),
         )
         .await;
-    assert!(typo.unwrap_err().contains("fatpct"));
+    assert!(typo.unwrap_err().to_string().contains("fatpct"));
     assert_eq!(sql(&v, &a, "SELECT * FROM body").await.unwrap()["rows"], json!([]));
 
     v.reading_add(
@@ -192,7 +193,7 @@ async fn unknown_fields_are_rejected_not_dropped() {
             as_user(&a),
         )
         .await;
-    assert!(upd.unwrap_err().contains("weightkg"));
+    assert!(upd.unwrap_err().to_string().contains("weightkg"));
     assert_eq!(
         sql(&v, &a, "SELECT weight_kg FROM body").await.unwrap()["rows"],
         json!([{"weight_kg": 80}])
@@ -975,7 +976,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
             as_user(&a),
         )
         .await;
-    assert!(dup.unwrap_err().contains("duplicate key"));
+    assert!(dup.unwrap_err().to_string().contains("duplicate key"));
     // Manual edits still work.
     v.reading_update(
         p(json!({"kind": "heart_rate", "time": "2026-08-20T09:00:00Z", "set": {"bpm": 70}})),
@@ -1107,12 +1108,17 @@ async fn loop_frames_round_trip() {
 
     // App sleep is read-only for the MCP write tools.
     let id = sql(&v, &a, "SELECT id FROM sleep_session").await.unwrap()["rows"][0]["id"].clone();
-    let err = v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap_err();
+    let err = v
+        .sleep_delete(p(json!({ "id": id })), as_user(&a))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("no manual sleep session"), "{err}");
     let err = v
         .sleep_update(p(json!({"id": id, "note": "x"})), as_user(&a))
         .await
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("no manual sleep session"), "{err}");
 }
 

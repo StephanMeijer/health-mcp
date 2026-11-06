@@ -4,7 +4,7 @@ use axum::http::request::Parts;
 use chrono::{DateTime, Duration, Utc};
 use rmcp::handler::server::tool::{Extension, ToolRouter};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{ContentBlock, Implementation, IntoContents, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -14,7 +14,46 @@ use uuid::Uuid;
 use crate::auth::User;
 use crate::db::Db;
 
-type ToolResult = Result<String, String>;
+type ToolResult = Result<String, ToolError>;
+
+/// Why a tool call failed. The text of every variant goes to the model; `/api` maps the variant to a status.
+#[derive(Debug, PartialEq)]
+pub enum ToolError {
+    /// The caller's mistake: bad arguments, a CHECK violation, a SQL error in sql_query. The app gets `400`.
+    User(String),
+    /// Transient database failure (deadlock, restart, overload): nothing ran, trying again is safe. The app gets `503`.
+    Retry,
+    /// Any other server-side failure, logged here, never detailed to the caller. The app gets `500`.
+    Internal,
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::User(m) => f.write_str(m),
+            ToolError::Retry => f.write_str("temporarily unavailable, retry"),
+            ToolError::Internal => f.write_str("internal error"),
+        }
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(m: String) -> Self {
+        ToolError::User(m)
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(m: &str) -> Self {
+        ToolError::User(m.to_owned())
+    }
+}
+
+impl IntoContents for ToolError {
+    fn into_contents(self) -> Vec<ContentBlock> {
+        vec![ContentBlock::text(self.to_string())]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -263,7 +302,7 @@ pub struct Vitals {
     tool_router: ToolRouter<Self>,
 }
 
-fn user(parts: &Parts) -> Result<&str, String> {
+fn user(parts: &Parts) -> Result<&str, ToolError> {
     parts
         .extensions
         .get::<User>()
@@ -271,27 +310,22 @@ fn user(parts: &Parts) -> Result<&str, String> {
         .ok_or_else(|| "unauthenticated".into())
 }
 
-/// What a transient database failure (deadlock, restart, overload) returns; the app gets `503` for it.
-pub const RETRY: &str = "temporarily unavailable, retry";
-/// What any other server-side failure returns; the app gets `500` for it.
-pub const INTERNAL: &str = "internal error";
-
 /// Database messages (CHECK violations, SQL errors in sql_query) are useful to the model; anything else is internal.
-fn db_err(e: sqlx::Error) -> String {
+fn db_err(e: sqlx::Error) -> ToolError {
     match e {
         sqlx::Error::Database(d) if d.code().is_some_and(|c| retryable(&c)) => {
             tracing::warn!("transient database error: {d}");
-            RETRY.into()
+            ToolError::Retry
         }
-        sqlx::Error::Database(d) => d.message().to_owned(),
+        sqlx::Error::Database(d) => ToolError::User(d.message().to_owned()),
         // Every connection busy: nothing ran, so trying again is safe.
         sqlx::Error::PoolTimedOut => {
             tracing::warn!("database pool timed out");
-            RETRY.into()
+            ToolError::Retry
         }
         e => {
             tracing::error!("database error: {e}");
-            INTERNAL.into()
+            ToolError::Internal
         }
     }
 }
@@ -315,7 +349,7 @@ fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Ut
 }
 
 /// Inserts stages for a session the caller owns: sleep_add just created it, sleep_update matched user and source.
-async fn insert_stages(tx: &mut crate::db::Tx, user: &str, id: Uuid, stages: &[SleepStage]) -> Result<(), String> {
+async fn insert_stages(tx: &mut crate::db::Tx, user: &str, id: Uuid, stages: &[SleepStage]) -> Result<(), ToolError> {
     sqlx::query(
         "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
          SELECT time, $1, $2, stage, duration_s
@@ -349,7 +383,7 @@ impl Vitals {
     ) -> ToolResult {
         let user = user(&parts)?;
         if p.readings.len() > MAX_ROWS {
-            return Err(format!("at most {MAX_ROWS} readings per call"));
+            return Err(format!("at most {MAX_ROWS} readings per call").into());
         }
         let mut rows = Vec::with_capacity(p.readings.len());
         for r in &p.readings {
@@ -403,7 +437,7 @@ impl Vitals {
         .rows_affected();
         tx.commit().await.map_err(db_err)?;
         match n {
-            0 => Err(format!("no manual {t} reading at {}", p.time.to_rfc3339())),
+            0 => Err(format!("no manual {t} reading at {}", p.time.to_rfc3339()).into()),
             _ => Ok(json!({"updated": 1, "kind": t, "time": p.time}).to_string()),
         }
     }
@@ -559,7 +593,7 @@ impl Vitals {
         .map_err(db_err)?
         .rows_affected();
         if n == 0 {
-            return Err(format!("no manual sleep session {}", p.id));
+            return Err(format!("no manual sleep session {}", p.id).into());
         }
         if let Some(stages) = p.stages {
             sqlx::query("DELETE FROM vitals_data.sleep_stage WHERE session_id = $1 AND user_id = $2")
@@ -592,7 +626,7 @@ impl Vitals {
                 .rows_affected();
         tx.commit().await.map_err(db_err)?;
         match n {
-            0 => Err(format!("no manual sleep session {}", p.id)),
+            0 => Err(format!("no manual sleep session {}", p.id).into()),
             _ => Ok(json!({"id": p.id}).to_string()),
         }
     }
@@ -729,7 +763,7 @@ impl Vitals {
             ($tool:ident) => {
                 match serde_json::from_value(args) {
                     Ok(a) => self.$tool(Parameters(a), x).await,
-                    Err(e) => Err(format!("invalid arguments: {e}")),
+                    Err(e) => Err(format!("invalid arguments: {e}").into()),
                 }
             };
         }

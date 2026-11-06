@@ -15,7 +15,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::auth::User;
 use crate::db::Db;
-use crate::tools::{SleepStage, Vitals};
+use crate::tools::{SleepStage, ToolError, Vitals};
 
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
@@ -541,11 +541,11 @@ async fn call_tool(
         None => StatusCode::NOT_FOUND.into_response(),
         // Tools return JSON text; `schema_describe` returns plain text, which becomes a JSON string.
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),
-        Some(Err(e)) if e == crate::tools::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Some(Err(e)) if e == crate::tools::RETRY => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response()
+        Some(Err(ToolError::Internal)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Some(Err(e @ ToolError::Retry)) => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e.to_string() }))).into_response()
         }
-        Some(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+        Some(Err(ToolError::User(e))) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
 }
 
