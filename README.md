@@ -27,12 +27,12 @@ The owner needs `CREATEROLE` the first time, or you create the roles yourself be
 CREATE ROLE vitals_app    LOGIN PASSWORD '…';
 CREATE ROLE vitals_reader LOGIN PASSWORD '…';
 -- importers: write to vitals_data.*, trusted to set user_id (the Authelia `sub`) and source
-CREATE ROLE vitals_importer LOGIN PASSWORD '…' BYPASSRLS;
+CREATE ROLE vitals_importer LOGIN PASSWORD '…';
 GRANT USAGE ON SCHEMA vitals_data TO vitals_importer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA vitals_data TO vitals_importer;
 ```
 
-Don't give `vitals_reader` any grant on `vitals_data`. Chunks would inherit it without RLS (see SPEC.md, Isolation).
+Don't give `vitals_reader` any grant on `vitals_data`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
 
 **Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
 (full snippet in SPEC.md). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.

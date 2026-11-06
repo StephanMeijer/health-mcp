@@ -362,13 +362,13 @@ impl From<sqlx::Error> for StoreError {
 /// Inserts all frames in one transaction; returns how many rows were new.
 pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreError> {
     let mut tx = db.app_tx(user).await?;
-    // The raw tables have no RLS and their FK only proves the device exists, so ownership is checked here
-    // (RLS on devices hides other users' rows).
+    // No RLS: a device FK only proves the device exists, so every frame's device must be one of the user's.
     let mut ids: Vec<i32> = frames.iter().map(Frame::device_id).collect();
     ids.sort_unstable();
     ids.dedup();
-    let own: Vec<i32> = sqlx::query_scalar("SELECT id FROM vitals_data.devices WHERE id = ANY($1)")
+    let own: Vec<i32> = sqlx::query_scalar("SELECT id FROM vitals_data.devices WHERE id = ANY($1) AND user_id = $2")
         .bind(&ids)
+        .bind(user)
         .fetch_all(&mut *tx)
         .await?;
     if let Some(i) = frames.iter().position(|f| !own.contains(&f.device_id())) {
@@ -450,7 +450,8 @@ struct Device {
 async fn list_devices(State(db): State<Db>, Extension(User(user)): Extension<User>) -> Response {
     let devices = async {
         let mut tx = db.app_tx(&user).await?;
-        sqlx::query_as::<_, Device>("SELECT id, model, serial FROM vitals_data.devices ORDER BY id")
+        sqlx::query_as::<_, Device>("SELECT id, model, serial FROM vitals_data.devices WHERE user_id = $1 ORDER BY id")
+            .bind(&user)
             .fetch_all(&mut *tx)
             .await
     };
