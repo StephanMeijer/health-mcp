@@ -251,15 +251,28 @@ fn user(parts: &Parts) -> Result<&str, String> {
         .ok_or_else(|| "unauthenticated".into())
 }
 
+/// What a transient database failure (deadlock, serialization failure) returns; the app gets `503` for it.
+pub const RETRY: &str = "temporarily unavailable, retry";
+
 /// Database messages (CHECK violations, SQL errors in sql_query) are useful to the model; anything else is internal.
 fn db_err(e: sqlx::Error) -> String {
     match e {
+        sqlx::Error::Database(d) if d.code().is_some_and(|c| retryable(&c)) => {
+            tracing::warn!("transient database error: {d}");
+            RETRY.into()
+        }
         sqlx::Error::Database(d) => d.message().to_owned(),
         e => {
             tracing::error!("database error: {e}");
             "internal error".into()
         }
     }
+}
+
+/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock), except 40002, a constraint
+/// violation that a retry repeats. 57014 (sql_query's statement timeout) stays the caller's error.
+fn retryable(code: &str) -> bool {
+    code.starts_with("40") && code != "40002"
 }
 
 fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -293,7 +306,7 @@ impl Vitals {
     }
 
     #[tool(
-        description = "Log one or more manual readings of one kind (heart_rate, hrv, blood_pressure, body). Units: bpm, ms, mmHg, kg, %, °C."
+        description = "Log 1–1000 manual readings of one kind (heart_rate, hrv, blood_pressure, body). Units: bpm, ms, mmHg, kg, %, °C."
     )]
     pub async fn reading_add(
         &self,
@@ -301,6 +314,9 @@ impl Vitals {
         Extension(parts): Extension<Parts>,
     ) -> ToolResult {
         let user = user(&parts)?;
+        if p.readings.len() > MAX_ROWS {
+            return Err(format!("at most {MAX_ROWS} readings per call"));
+        }
         let mut rows = Vec::with_capacity(p.readings.len());
         for r in &p.readings {
             let mut m = r.values.to_object(p.kind)?;
@@ -661,6 +677,45 @@ impl Vitals {
     }
 }
 
+/// The same tools for the app over `/api`: names, arguments and results exactly as over MCP.
+impl Vitals {
+    /// Every tool with its input JSON Schema, generated from the same structs as MCP's `tools/list`.
+    pub fn tool_list() -> Vec<rmcp::model::Tool> {
+        Self::tool_router().list_all()
+    }
+
+    /// Runs tool `name` with JSON `args` as `user`; `None` if there is no such tool.
+    pub async fn call(&self, name: &str, args: Value, user: User) -> Option<ToolResult> {
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts.extensions.insert(user);
+        let x = Extension(parts);
+        // Bad arguments are the caller's error, like a tool error: Some(Err).
+        macro_rules! with_args {
+            ($tool:ident) => {
+                match serde_json::from_value(args) {
+                    Ok(a) => self.$tool(Parameters(a), x).await,
+                    Err(e) => Err(format!("invalid arguments: {e}")),
+                }
+            };
+        }
+        Some(match name {
+            "reading_add" => with_args!(reading_add),
+            "reading_update" => with_args!(reading_update),
+            "reading_delete" => with_args!(reading_delete),
+            "reading_list" => with_args!(reading_list),
+            "reading_aggregate" => with_args!(reading_aggregate),
+            "sleep_add" => with_args!(sleep_add),
+            "sleep_update" => with_args!(sleep_update),
+            "sleep_delete" => with_args!(sleep_delete),
+            "sleep_list" => with_args!(sleep_list),
+            "sql_query" => with_args!(sql_query),
+            "summary" => self.summary(x).await,
+            "schema_describe" => Ok(self.schema_describe().await),
+            _ => return None,
+        })
+    }
+}
+
 /// Most rows a tool returns, so one call can't flood the model (a strap writes heart rate every second).
 const MAX_ROWS: usize = 1000;
 
@@ -739,5 +794,11 @@ mod tests {
             serde_json::from_value(json!({"time": "2026-10-01T07:00:00Z", "bpm": 60, "bpmm": 61})).unwrap();
         assert_eq!(r.values.bpm, Some(60));
         assert_eq!(r.values.unknown.keys().collect::<Vec<_>>(), ["bpmm"]);
+    }
+
+    #[test]
+    fn only_transaction_rollbacks_are_retryable() {
+        assert!(retryable("40001") && retryable("40P01"));
+        assert!(!retryable("40002") && !retryable("57014") && !retryable("23514"));
     }
 }

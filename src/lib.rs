@@ -121,6 +121,10 @@ mod tests {
             (StatusCode::UNAUTHORIZED, invalid(API_CHALLENGE))
         );
         assert_eq!(
+            call("/api/v1/tools/summary", Some(MCP)).await,
+            (StatusCode::UNAUTHORIZED, invalid(API_CHALLENGE))
+        );
+        assert_eq!(
             call("/mcp", Some(API)).await,
             (StatusCode::UNAUTHORIZED, invalid(MCP_CHALLENGE))
         );

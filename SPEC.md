@@ -194,7 +194,7 @@ Tools that bucket by day also take `tz`, an IANA zone (default `UTC`).
 
 | Tool | Purpose |
 |---|---|
-| `reading_add` | Add one or more readings of one `kind`, always with `source = 'manual'`. |
+| `reading_add` | Add up to 1000 readings of one `kind`, always with `source = 'manual'`. |
 | `reading_update` | Change the fields of the manual reading identified by (`kind`, `time`). |
 | `reading_delete` | Delete manual readings by exact times, or by `kind` + time range. Returns the number deleted. |
 | `reading_list` | Raw readings: `kind`, `from`, `to`, optional `source`, `limit` (≤1000), `oldest_first`. |
@@ -275,6 +275,23 @@ Same auth as ingest.
 - `GET /api/v1/devices` → `200 [{"id":1,"model":"Polar H10","serial":"244E7234"}]`, the user's devices.
 - `POST /api/v1/devices` with `{"model":"Polar H10","serial":"244E7234"}` → `200 {"id":1}`. Idempotent: a known
   `(model, serial)` returns its existing id. Both fields 1–100 characters, unknown fields are errors (`400`).
+
+### Tools
+
+The app calls the same tools as MCP clients, with the same arguments and results. Same auth as ingest.
+
+- `GET /api/v1/tools` → `200 [{"name", "description", "inputSchema"}, …]`. The input JSON Schemas are generated from
+  the same Rust structs as MCP's `tools/list`, so the app can generate its client types from them.
+- `POST /api/v1/tools/{name}` with the tool's arguments as a JSON body (empty means `{}`) → `200` with the tool's
+  output: JSON for reads (`reading_list`, `summary`, `sql_query`, …), a JSON string for write messages
+  (`"added 1 heart_rate reading(s)"`).
+  A tool error or bad argument → `400 {"error": "…"}` with the message the model would get; unknown tool → `404`;
+  body over 1 MiB after decompression → `413`; a transient database failure (SQLSTATE class 40: deadlock,
+  serialization failure) → `503 {"error": "temporarily unavailable, retry"}`, safe to retry; internal error → `500`.
+  A `sql_query` statement timeout stays a `400`.
+- `sql_query` reads through the same signed `vitals.*` views as over MCP, so the app sees only the user's rows.
+- The output of a tool has no schema beyond the description above; renaming a tool or an argument breaks the app as
+  well as MCP clients.
 
 ## Config (env)
 
