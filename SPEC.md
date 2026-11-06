@@ -217,6 +217,10 @@ importer roles `BYPASSRLS` (they're trusted to set `user_id` and `source`).
   ```
   `sleep` stages are `awake`/`light`/`deep`/`rem`. A re-sent night with the same `start_at` is a no-op, including its stages.
   `recharge`'s last three fields are optional.
+  `ecg` and `acc` take an optional `"encoding":"delta"` (default `"absolute"`): each array then holds differences from
+  the previous value, the first from 0, e.g. `"samples":[-12,52,-33]` for `[-12,40,7]`. The server stores the rebuilt
+  absolute values. Each difference and each rebuilt value must fit the array's type (`i16` for `acc`, `i32` for `ecg`),
+  otherwise the frame is a `400`; send such a frame absolute. Deploy the server before an app that sends it.
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
   `device_id` is the id from `POST /api/v1/devices`; a frame with an id that isn't one of the user's devices is a `400`.
 - **All or nothing:** one transaction with `ON CONFLICT DO NOTHING`, so a retried batch is a no-op.
