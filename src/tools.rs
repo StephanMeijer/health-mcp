@@ -661,6 +661,45 @@ impl Vitals {
     }
 }
 
+/// The same tools for the app over `/api`: names, arguments and results exactly as over MCP.
+impl Vitals {
+    /// Every tool with its input JSON Schema, generated from the same structs as MCP's `tools/list`.
+    pub fn tool_list() -> Vec<rmcp::model::Tool> {
+        Self::tool_router().list_all()
+    }
+
+    /// Runs tool `name` with JSON `args` as `user`; `None` if there is no such tool.
+    pub async fn call(&self, name: &str, args: Value, user: User) -> Option<ToolResult> {
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts.extensions.insert(user);
+        let x = Extension(parts);
+        // Bad arguments are the caller's error, like a tool error: Some(Err).
+        macro_rules! with_args {
+            ($tool:ident) => {
+                match serde_json::from_value(args) {
+                    Ok(a) => self.$tool(Parameters(a), x).await,
+                    Err(e) => Err(format!("invalid arguments: {e}")),
+                }
+            };
+        }
+        Some(match name {
+            "reading_add" => with_args!(reading_add),
+            "reading_update" => with_args!(reading_update),
+            "reading_delete" => with_args!(reading_delete),
+            "reading_list" => with_args!(reading_list),
+            "reading_aggregate" => with_args!(reading_aggregate),
+            "sleep_add" => with_args!(sleep_add),
+            "sleep_update" => with_args!(sleep_update),
+            "sleep_delete" => with_args!(sleep_delete),
+            "sleep_list" => with_args!(sleep_list),
+            "sql_query" => with_args!(sql_query),
+            "summary" => self.summary(x).await,
+            "schema_describe" => Ok(self.schema_describe().await),
+            _ => return None,
+        })
+    }
+}
+
 /// Most rows a tool returns, so one call can't flood the model (a strap writes heart rate every second).
 const MAX_ROWS: usize = 1000;
 

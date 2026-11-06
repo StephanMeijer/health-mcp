@@ -1075,3 +1075,125 @@ async fn loop_frames_round_trip() {
         .unwrap_err();
     assert!(err.contains("no manual sleep session"), "{err}");
 }
+
+// App access to the tools ------------------------------------------------------
+
+async fn tool(db: &Db, user: &str, name: &str, args: Value) -> (u16, Value) {
+    let req = Request::post(format!("/v1/tools/{name}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(args.to_string()))
+        .unwrap();
+    api(db, user, req).await
+}
+
+#[tokio::test]
+async fn app_can_call_every_tool() {
+    let (_, db, _) = setup().await;
+    let (a, b) = (uid("alice"), uid("bob"));
+    let t = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let hr = |extra: Value| {
+        let mut m = json!({"kind": "heart_rate"});
+        m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        m
+    };
+
+    let (s, out) = tool(
+        &db,
+        &a,
+        "reading_add",
+        hr(json!({"readings": [{"time": t, "bpm": 64}]})),
+    )
+    .await;
+    assert_eq!((s, out), (200, json!("added 1 heart_rate reading(s)")));
+    let (s, out) = tool(&db, &a, "reading_list", hr(json!({}))).await;
+    assert_eq!((s, out[0]["bpm"].clone()), (200, json!(64)));
+    let (s, out) = tool(&db, &a, "reading_aggregate", hr(json!({"field": "bpm"}))).await;
+    assert_eq!((s, out["buckets"][0]["n"].clone()), (200, json!(1)));
+    let (s, out) = tool(&db, &a, "summary", Value::Null).await;
+    assert_eq!((s, out["heart_rate"]["latest"]["bpm"].clone()), (200, json!(64)));
+    let (s, out) = tool(&db, &a, "schema_describe", json!({})).await;
+    assert!(s == 200 && out.as_str().unwrap().contains("heart_rate"), "{s} {out}");
+    let (s, out) = tool(&db, &a, "sql_query", json!({"sql": "SELECT bpm FROM heart_rate"})).await;
+    assert_eq!((s, out["rows"].clone()), (200, json!([{"bpm": 64}])));
+
+    // Bob reaches none of it.
+    assert_eq!(tool(&db, &b, "reading_list", hr(json!({}))).await, (200, json!([])));
+    let (_, out) = tool(&db, &b, "sql_query", json!({"sql": "SELECT bpm FROM heart_rate"})).await;
+    assert_eq!(out["rows"], json!([]));
+
+    let (s, out) = tool(&db, &a, "reading_update", hr(json!({"time": t, "set": {"bpm": 66}}))).await;
+    assert_eq!(s, 200, "{out}");
+    let (s, out) = tool(&db, &a, "reading_delete", hr(json!({"times": [t]}))).await;
+    assert_eq!((s, out), (200, json!("deleted 1 manual heart_rate reading(s)")));
+
+    {
+        let _serial = SLEEP_WRITES.lock().await;
+        let range = json!({"from": "2026-06-14T00:00:00Z", "to": "2026-06-16T00:00:00Z"});
+        let (s, out) = tool(
+            &db,
+            &a,
+            "sleep_add",
+            json!({"start_at": "2026-06-14T23:00:00Z", "end_at": "2026-06-15T07:00:00Z",
+                   "stages": [{"time": "2026-06-14T23:00:00Z", "stage": "deep", "duration_s": 600}]}),
+        )
+        .await;
+        assert_eq!(s, 200, "{out}");
+        let id = session_id(out.as_str().unwrap());
+        let (s, out) = tool(&db, &a, "sleep_list", range.clone()).await;
+        assert_eq!((s, out[0]["stage_seconds"].clone()), (200, json!({"deep": 600})));
+        let (s, out) = tool(&db, &a, "sleep_update", json!({"id": id, "note": "late"})).await;
+        assert_eq!(s, 200, "{out}");
+        let (s, out) = tool(&db, &a, "sleep_delete", json!({ "id": id })).await;
+        assert_eq!(s, 200, "{out}");
+        assert_eq!(tool(&db, &a, "sleep_list", range).await, (200, json!([])));
+    }
+
+    assert_eq!(tool(&db, &a, "nope", json!({})).await.0, 404);
+    let (s, out) = tool(&db, &a, "reading_list", hr(json!({"bogus": 1}))).await;
+    assert!(
+        s == 400 && out["error"].as_str().unwrap().contains("bogus"),
+        "{s} {out}"
+    );
+    let (s, out) = tool(&db, &a, "reading_aggregate", hr(json!({"field": "kg"}))).await;
+    assert!(
+        s == 400 && out["error"].as_str().unwrap().contains("does not belong"),
+        "{s} {out}"
+    );
+}
+
+#[tokio::test]
+async fn app_gets_the_tool_schemas() {
+    let (_, db, _) = setup().await;
+    let (s, out) = api(
+        &db,
+        "x",
+        Request::get("/v1/tools").body(axum::body::Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let mut names: Vec<_> = out
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "reading_add",
+            "reading_aggregate",
+            "reading_delete",
+            "reading_list",
+            "reading_update",
+            "schema_describe",
+            "sleep_add",
+            "sleep_delete",
+            "sleep_list",
+            "sleep_update",
+            "sql_query",
+            "summary"
+        ]
+    );
+    assert!(out.as_array().unwrap().iter().all(|t| t["inputSchema"].is_object()));
+}

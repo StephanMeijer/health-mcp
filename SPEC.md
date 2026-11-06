@@ -276,6 +276,21 @@ Same auth as ingest.
 - `POST /api/v1/devices` with `{"model":"Polar H10","serial":"244E7234"}` → `200 {"id":1}`. Idempotent: a known
   `(model, serial)` returns its existing id. Both fields 1–100 characters, unknown fields are errors (`400`).
 
+### Tools
+
+The app calls the same tools as MCP clients, with the same arguments and results. Same auth as ingest.
+
+- `GET /api/v1/tools` → `200 [{"name", "description", "inputSchema"}, …]`. The input JSON Schemas are generated from
+  the same Rust structs as MCP's `tools/list`, so the app can generate its client types from them.
+- `POST /api/v1/tools/{name}` with the tool's arguments as a JSON body (empty means `{}`) → `200` with the tool's
+  output: JSON for reads (`reading_list`, `summary`, `sql_query`, …), a JSON string for write messages
+  (`"added 1 heart_rate reading(s)"`).
+  A tool error or bad argument → `400 {"error": "…"}` with the message the model would get; unknown tool → `404`;
+  internal error → `500`.
+- `sql_query` reads through the same signed `vitals.*` views as over MCP, so the app sees only the user's rows.
+- The output of a tool has no schema beyond the description above; renaming a tool or an argument breaks the app as
+  well as MCP clients.
+
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
