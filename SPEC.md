@@ -286,8 +286,10 @@ The app calls the same tools as MCP clients, with the same arguments and results
   output: JSON for reads (`reading_list`, `summary`, `sql_query`, …), a JSON string for write messages
   (`"added 1 heart_rate reading(s)"`).
   A tool error or bad argument → `400 {"error": "…"}` with the message the model would get; unknown tool → `404`;
-  body over 1 MiB after decompression → `413`; a transient database failure (SQLSTATE class 40 deadlock or
-  serialization failure, 08 lost connection, 53 overload, 57P01–57P03 restart or failover) → `503 {"error": "temporarily unavailable, retry"}`, safe to retry; internal error → `500`.
+  body over 1 MiB after decompression → `413`; a transient database failure → `503 {"error": "temporarily unavailable, retry"}`,
+  safe to retry: SQLSTATE class 40 (deadlock, serialization failure; not 40002), 08000/08003/08006 reported by the
+  server, 53300 too many connections, 53100 disk full, 57P01–57P03 restart or failover, or no free pool connection.
+  A connection that drops mid-request is an internal error → `500`, as is anything else unexpected.
   A `sql_query` statement timeout stays a `400`.
 - `sql_query` reads through the same signed `vitals.*` views as over MCP, so the app sees only the user's rows.
 - The output of a tool has no schema beyond the description above; renaming a tool or an argument breaks the app as
