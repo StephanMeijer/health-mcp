@@ -122,8 +122,8 @@ so every hypertable can now be compressed. `vitals_app` has only `INSERT` on the
 `user_id` from the token. The reader keeps seeing only its own rows through the `vitals.*` views, which never depended
 on RLS.
 
-Every hypertable is compressed with `orderby time` and a `segmentby` equal to its unique key minus `time`
-(TimescaleDB needs that to check uniqueness in compressed chunks); `ecg`/`acc` after 2 hours (below), the rest after
+Every hypertable is compressed with `orderby time` and a `segmentby` equal to its unique key minus `time`, plus
+`user_id` for sleep_stage (TimescaleDB needs the key columns to check uniqueness in compressed chunks); `ecg`/`acc` after 2 hours (below), the rest after
 7 days, once the phone's outbox can no longer resend into them. Late resends and manual edits still work on compressed
 chunks, more slowly.
 

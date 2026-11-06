@@ -268,11 +268,24 @@ async fn other_users_rows_are_invisible_and_untouchable() {
         (&json!(1), &json!(99)),
         "{agg}"
     );
+    // Alice has a reading and a night inside the summary's 30-day window; bob's summary shows none of it.
+    let _serial = SLEEP_WRITES.lock().await;
+    let ago = |h: i64| (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339();
+    add_hr(&v, &a, &ago(1), 61).await;
+    v.sleep_add(
+        p(json!({"start_at": ago(10), "end_at": ago(2),
+                 "stages": [{"time": ago(10), "stage": "deep", "duration_s": 600}]})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
     let summary: Value = serde_json::from_str(&v.summary(as_user(&b)).await.unwrap()).unwrap();
     assert_eq!(summary["heart_rate"]["latest"]["bpm"], 99, "{summary}");
+    assert_eq!(summary["heart_rate"]["bpm"]["n_30d"], 0, "{summary}");
+    assert_eq!(summary["sleep"]["nights_30d"], 0, "{summary}");
+    assert_eq!(summary["sleep"]["stage_pct_30d"], Value::Null, "{summary}");
 
     // Alice's sleep: bob can't see, change or delete it.
-    let _serial = SLEEP_WRITES.lock().await;
     let id = session_id(
         &v.sleep_add(
             p(
@@ -918,6 +931,14 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     assert_eq!(post(batch).await, (200, json!({"frames": 5, "inserted": 0})));
     let new = json!({"type": "hr", "device_id": d, "time": "2026-08-20T08:00:01Z", "bpm": 62}).to_string();
     assert_eq!(post(new).await, (200, json!({"frames": 1, "inserted": 1})));
+    // A manual row (NULL device_id, a segmentby column) is still unique once compressed.
+    let dup = v
+        .reading_add(
+            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-08-20T09:00:00Z", "bpm": 61}]})),
+            as_user(&a),
+        )
+        .await;
+    assert!(dup.unwrap_err().contains("duplicate key"));
     // Manual edits still work.
     v.reading_update(
         p(json!({"kind": "heart_rate", "time": "2026-08-20T09:00:00Z", "set": {"bpm": 70}})),
@@ -949,6 +970,18 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         rows["rows"][0],
         json!({"bpm": [60, 62, 70], "hrv": 0, "stages": ["light600", "rem300"]})
     );
+
+    // sleep_delete cascades into the compressed stages.
+    compress_day(&owner, &["sleep_stage"], "2026-08-20").await;
+    v.sleep_delete(p(json!({ "id": id })), as_user(&a)).await.unwrap();
+    let left = sql(
+        &v,
+        &a,
+        &format!("SELECT count(*) AS n FROM sleep_stage WHERE session_id = '{id}'"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(left["rows"][0]["n"], 0);
 }
 
 #[tokio::test]

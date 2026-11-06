@@ -15,7 +15,8 @@ BEGIN
   END LOOP;
 END $$;
 
--- segmentby is each table's unique key minus time, which TimescaleDB needs to check uniqueness in compressed chunks.
+-- segmentby is each table's unique key minus time (plus user_id for sleep_stage), which TimescaleDB needs to check
+-- uniqueness in compressed chunks.
 -- 7 days: after the phone's outbox can resend; late resends and manual edits still work, just slower.
 DO $$
 DECLARE
