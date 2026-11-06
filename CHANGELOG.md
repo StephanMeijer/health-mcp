@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/StephanMeijer/vitals-mcp/compare/v0.3.1...v0.4.0) - 2026-11-06
+
+### Added
+
+- *(db)* [**breaking**] move stored ecg and acc frames into per-sample rows
+- *(db)* [**breaking**] store ecg and acc as one row per sample
+
 ## [0.3.1](https://github.com/StephanMeijer/vitals-mcp/compare/v0.3.0...v0.3.1) - 2026-11-06
 
 ### Added
