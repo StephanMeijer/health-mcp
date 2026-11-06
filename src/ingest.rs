@@ -25,6 +25,9 @@ pub const MAX_FRAMES: usize = 5000;
 pub const MAX_AGE: TimeDelta = TimeDelta::days(8);
 /// Newest frame time accepted, for clock skew between phone and server.
 pub const MAX_SKEW: TimeDelta = TimeDelta::hours(1);
+/// ecg and acc store one row per sample. Measured on the dev database (TimescaleDB 2.31, recent and compressed chunks
+/// alike): ~33 µs per sample, so 200k samples commit in ~6.5 s, a quarter of the 30 s statement timeout.
+pub const MAX_SAMPLES: usize = 200_000;
 /// Tool arguments are small; this also applies after decompression.
 pub const MAX_TOOL_BODY: usize = 1 << 20;
 
@@ -216,6 +219,15 @@ impl Frame {
         if ok { Ok(()) } else { Err(why) }
     }
 
+    /// Rows this frame becomes in the one-row-per-sample tables.
+    fn samples(&self) -> usize {
+        match self {
+            Frame::Ecg { samples, .. } => samples.len(),
+            Frame::Acc { x, .. } => x.len(),
+            _ => 0,
+        }
+    }
+
     fn device_id(&self) -> i32 {
         match self {
             Frame::Hr { device_id, .. }
@@ -247,6 +259,8 @@ impl Frame {
 pub enum DecodeError {
     UnsupportedType,
     TooMany,
+    /// More than [`MAX_SAMPLES`] ecg/acc samples in total.
+    TooManySamples,
     /// 0-based index of the frame (JSONL: of the non-empty line).
     Invalid(usize, String),
 }
@@ -254,7 +268,8 @@ pub enum DecodeError {
 /// `now` bounds the frame times (see [`MAX_AGE`]); the handler passes the current time.
 pub fn decode(content_type: &str, body: &[u8], now: DateTime<Utc>) -> Result<Vec<Frame>, DecodeError> {
     let mut frames = Vec::new();
-    let push = |frames: &mut Vec<Frame>, mut f: Frame| {
+    let mut samples = 0;
+    let mut push = |frames: &mut Vec<Frame>, mut f: Frame| {
         if frames.len() == MAX_FRAMES {
             return Err(DecodeError::TooMany);
         }
@@ -262,6 +277,17 @@ pub fn decode(content_type: &str, body: &[u8], now: DateTime<Utc>) -> Result<Vec
             .and_then(|()| f.recent(now))
             .and_then(|()| f.check())
             .map_err(|e| DecodeError::Invalid(frames.len(), e.into()))?;
+        // A frame over the cap on its own can't be fixed by splitting the batch, so it's invalid rather than a 413.
+        if f.samples() > MAX_SAMPLES {
+            return Err(DecodeError::Invalid(
+                frames.len(),
+                format!("at most {MAX_SAMPLES} samples per frame"),
+            ));
+        }
+        samples += f.samples();
+        if samples > MAX_SAMPLES {
+            return Err(DecodeError::TooManySamples);
+        }
         frames.push(f);
         Ok(())
     };
@@ -466,6 +492,14 @@ async fn ingest(
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("at most {MAX_FRAMES} frames per batch"),
+            )
+                .into_response();
+        }
+        // The app halves the batch and resends on 413, so an oversized batch no longer fails (and retries) forever.
+        Err(DecodeError::TooManySamples) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("at most {MAX_SAMPLES} ecg and acc samples per batch: split it"),
             )
                 .into_response();
         }
@@ -851,5 +885,40 @@ mod tests {
                 "{f}"
             );
         }
+    }
+
+    #[test]
+    fn caps_samples_per_batch() {
+        let t = now();
+        let ecg = |n: usize| Frame::Ecg {
+            device_id: 1,
+            time: t,
+            sample_rate: 130,
+            encoding: Encoding::Absolute,
+            samples: vec![0; n],
+        };
+        let acc = |n: usize| Frame::Acc {
+            device_id: 1,
+            time: t,
+            sample_rate: 200,
+            encoding: Encoding::Absolute,
+            x: vec![0; n],
+            y: vec![0; n],
+            z: vec![0; n],
+        };
+        // ecg and acc count together, across frames.
+        let half = MAX_SAMPLES / 2;
+        let at_cap = [ecg(half), acc(MAX_SAMPLES - half)];
+        assert_eq!(dec("application/cbor-seq", &cbor(&at_cap)).unwrap().len(), 2);
+        let over = [ecg(half), acc(MAX_SAMPLES - half + 1)];
+        assert_eq!(
+            dec("application/cbor-seq", &cbor(&over)),
+            Err(DecodeError::TooManySamples)
+        );
+        // One frame over the cap alone can't be split, so it's invalid instead.
+        assert!(matches!(
+            dec("application/cbor-seq", &cbor(&[ecg(1), acc(MAX_SAMPLES + 1)])),
+            Err(DecodeError::Invalid(1, _))
+        ));
     }
 }

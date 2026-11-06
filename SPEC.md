@@ -251,6 +251,10 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
   absolute values. Each difference and each rebuilt value must fit the array's type (`i16` for `acc`, `i32` for `ecg`),
   otherwise the frame is a `400`; send such a frame absolute. Deploy the server before an app that sends it.
   Unknown fields or types are errors. An empty body is a valid (heartbeat) batch.
+  `ecg` and `acc` become one row per sample, so a batch holds at most 200 000 of their samples together (about 10 minutes
+  of H10 data). That commits in about 6.5 s on the dev database (~33 µs per sample), well inside the 30 s statement
+  timeout; a larger batch is a `413` instead of a timeout the app would retry forever. A single frame over the cap can't
+  be split, so it is a `400` instead.
   Every frame time (`time`, `start_at`, `end_at`, stage `time`, and a recharge `night` by date, ±1 day for time
   zones) must lie between 8 days ago (the phone's 7-day outbox plus a day) and 1 hour from now; otherwise the frame is
   a `400`. This keeps a buggy clock from spreading one batch over thousands of hourly `ecg`/`acc` chunks.
@@ -260,10 +264,10 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
 | Response | Meaning |
 |---|---|
 | `200 {"frames":n,"inserted":m}` | Committed; `m` < `n` means some frames were already stored, or were `ecg`/`acc` frames with empty arrays |
-| `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid (including a time outside the window above); nothing was stored |
+| `400 {"frame":i,"error":"…"}` | Frame `i` (0-based) is invalid (including a time outside the window above, or over 200 000 samples on its own); nothing was stored |
 | `401` | Missing or bad token, with the RFC 9728 challenge |
 | `408` | Took more than 60 s, including waiting for a free slot; retry (if it did commit, the retry is a no-op) |
-| `413` | Body over 32 MiB after decompression, or more than 5000 frames |
+| `413` | Body over 32 MiB after decompression, more than 5000 frames, or more than 200 000 `ecg` and `acc` samples in total; the app splits the batch and resends |
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
 | `500` | Database error; retry |
 
