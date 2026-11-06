@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so a new RustSec advisory against a shipped dependency fails the audit job even when nobody pushes.
+  schedule:
+    - cron: '17 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -74,6 +77,7 @@ jobs:
 
   # Build (don't push) both arches so a broken Dockerfile can't get tagged.
   docker-build:
+    if: github.event_name != 'schedule'
     uses: ./.github/workflows/docker.yml
     with:
       push: false

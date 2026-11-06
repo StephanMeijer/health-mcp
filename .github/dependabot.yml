@@ -1,7 +1,13 @@
-# Keeps the SHA-pinned actions (see .github/workflows/actions.lock) up to date.
+# Keeps the SHA-pinned actions (see .github/workflows/actions.lock) and the Cargo dependencies up to date.
 version: 2
 updates:
   - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
