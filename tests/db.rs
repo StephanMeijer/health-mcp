@@ -144,6 +144,9 @@ async fn validation_errors_reach_the_model() {
         .reading_aggregate(p(json!({"kind": "body", "field": "bpm"})), as_user(&a))
         .await;
     assert!(bad_agg.is_err());
+    // A source outside the enum is an argument error, not an empty result.
+    let typo = serde_json::from_value::<ReadingList>(json!({"kind": "heart_rate", "source": "App"}));
+    assert!(typo.unwrap_err().to_string().contains("App"));
 }
 
 #[tokio::test]
@@ -1168,6 +1171,8 @@ async fn app_can_call_every_tool() {
         s == 400 && out["error"].as_str().unwrap().contains("does not belong"),
         "{s} {out}"
     );
+    let (s, out) = tool(&db, &a, "reading_list", hr(json!({"source": "App"}))).await;
+    assert!(s == 400 && out["error"].as_str().unwrap().contains("App"), "{s} {out}");
 
     // Tool bodies get 1 MiB, not ingest's 32 MiB, also after decompression.
     let pad = "x".repeat(vitals_mcp::ingest::MAX_TOOL_BODY);
@@ -1224,6 +1229,18 @@ async fn app_gets_the_tool_schemas() {
         ]
     );
     assert!(out.as_array().unwrap().iter().all(|t| t["inputSchema"].is_object()));
+    // The schema names the allowed sources, so the app can validate them before calling.
+    let reading_list = out
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "reading_list")
+        .unwrap();
+    let schema = reading_list["inputSchema"].to_string();
+    assert!(
+        schema.contains(r#""manual""#) && schema.contains(r#""import""#),
+        "{schema}"
+    );
     // Every listed tool is also callable: `Vitals::call` is a hand-written match next to `#[tool_router]`.
     // A bad argument gets 400 (or 200 from tools without arguments); a missing arm in `call` gets 404.
     for name in names {
