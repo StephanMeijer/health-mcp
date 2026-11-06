@@ -90,6 +90,45 @@ async fn ready_while_every_connection_is_busy() {
 }
 
 #[tokio::test]
+async fn sql_query_caps_output_bytes() {
+    let (v, _, _) = setup().await;
+    let a = uid("alice");
+    // 10 rows of ~300 kB: the first three fit in 1 MiB, the fourth would not.
+    let big = sql(&v, &a, "SELECT repeat('x', 300000) AS s FROM generate_series(1, 10)")
+        .await
+        .unwrap();
+    assert_eq!(big["truncated"], true);
+    assert_eq!(big["rows"].as_array().unwrap().len(), 3);
+    // Exactly at the cap is not truncated.
+    let exact = format!("SELECT repeat('x', {}) AS s", (1 << 20) - r#"{"s":""}"#.len());
+    let exact = sql(&v, &a, &exact).await.unwrap();
+    assert_eq!(
+        (exact["truncated"].clone(), exact["rows"].as_array().unwrap().len()),
+        (json!(false), 1)
+    );
+    let small = sql(&v, &a, "SELECT n FROM generate_series(1, 3) n ORDER BY n DESC")
+        .await
+        .unwrap();
+    assert_eq!(
+        small,
+        json!({"truncated": false, "rows": [{"n": 3}, {"n": 2}, {"n": 1}]})
+    );
+    // SQL that closes the wrapper's parentheses early must not get past either cap.
+    for escape in [
+        "SELECT repeat('x', 2000) AS x) t LIMIT 1001) l) r) s0 CROSS JOIN generate_series(1, 5000) g \
+         CROSS JOIN (SELECT 1 AS y FROM (SELECT 1 AS z FROM (SELECT 1 AS w FROM (SELECT 1 AS v",
+        "SELECT 1 AS x) t LIMIT 0) l) r UNION ALL SELECT repeat('x', 50000000), 0, 0 \
+         FROM (SELECT 1 FROM (SELECT 1 FROM (SELECT 1",
+    ] {
+        if let Ok(out) = v.sql_query(p(json!({ "sql": escape })), as_user(&a)).await {
+            let r: Value = serde_json::from_str(&out).unwrap_or_default();
+            let n = r["rows"].as_array().map_or(usize::MAX, Vec::len);
+            assert!(n <= 1000 && out.len() <= 1 << 20, "escaped the caps: {escape}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn readings_round_trip() {
     let (v, _, _) = setup().await;
     let a = uid("alice");
@@ -1077,7 +1116,9 @@ async fn reading_aggregate_caps_buckets_and_app_queries_time_out() {
 #[tokio::test]
 async fn sql_query_accepts_a_column_named_like_its_wrapper_alias() {
     let (v, _, _) = setup().await;
-    let rows = sql(&v, &uid("alice"), "SELECT 1 AS t, 2 AS n").await.unwrap();
+    let rows = sql(&v, &uid("alice"), "SELECT 1 AS t, 2 AS n -- trailing comment")
+        .await
+        .unwrap();
     assert_eq!(rows["rows"], json!([{ "t": 1, "n": 2 }]));
 }
 
