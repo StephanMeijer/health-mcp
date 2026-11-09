@@ -44,7 +44,7 @@ jobs:
 
   clippy:
     # Fork PRs run untrusted build.rs / proc macros / rust-toolchain.toml: keep them off self-hosted runners.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || '9xx' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -57,7 +57,7 @@ jobs:
 
   fmt:
     # Fork PRs run untrusted build.rs / proc macros / rust-toolchain.toml: keep them off self-hosted runners.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || '9xx' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
