@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/StephanMeijer/vitals-mcp/compare/v0.5.0...v0.5.1) - 2026-11-09
+
+### Other
+
+- run on GitHub-hosted runners (free for public repos) ([#83](https://github.com/StephanMeijer/vitals-mcp/pull/83))
+- verify the actions lockfile on the 9xx runners ([#81](https://github.com/StephanMeijer/vitals-mcp/pull/81))
+
 ## [0.5.0](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.3...v0.5.0) - 2026-11-06
 
 ### Added
