@@ -1753,7 +1753,7 @@ async fn app_gets_the_tool_schemas() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     names.sort();
-    // The vitals, gym and sharing tools.
+    // The vitals, gym, comment and sharing tools.
     assert_eq!(
         names,
         [
@@ -1761,6 +1761,10 @@ async fn app_gets_the_tool_schemas() {
             "body_note_delete",
             "body_note_list",
             "body_note_update",
+            "comment_delete",
+            "comment_list",
+            "comment_reply",
+            "comment_update",
             "exercise_alternatives",
             "exercise_create",
             "exercise_search",
@@ -1796,6 +1800,8 @@ async fn app_gets_the_tool_schemas() {
             "sleep_update",
             "sql_query",
             "summary",
+            "thread_resolve",
+            "thread_start",
             "training_overview",
             "workout_add_past",
             "workout_current",

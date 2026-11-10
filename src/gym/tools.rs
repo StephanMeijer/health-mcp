@@ -7,10 +7,12 @@ use serde_json::Value;
 
 use crate::db::retryable;
 use crate::gym::body_note::*;
+use crate::gym::comment::*;
 use crate::gym::db::{App, AppError, AppResult};
 use crate::gym::search::*;
 use crate::gym::setup::*;
 use crate::gym::workout::*;
+use crate::share::{Author, author};
 use crate::tools::{Health, ToolError, ToolResult, user};
 
 pub(crate) const INSTRUCTIONS: &str = "\
@@ -69,6 +71,10 @@ location (a muscle group name where it fits, else free text like \"left knee\") 
 it's clear. training_overview.body_notes has the last 14 days: avoid loading a sore area, suggest lighter work or \
 alternatives, and point out repeats (body_note_list for longer patterns). Don't diagnose; for sharp or lasting pain, \
 suggest seeing a professional.
+Comments: threads about one workout, exercise or set, for talking with the people the user shares gym data with \
+(a trainer, a partner). thread_start opens one (target + id; an exercise also by name), comment_reply answers in it; \
+reply in an existing thread (comment_list) rather than starting another about the same thing. Facts about a set or \
+workout belong in its notes, not in a comment. Say who wrote a comment (author) when you relay it.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
@@ -434,8 +440,98 @@ impl Health {
     }
 }
 
-/// Runs tool `name` with JSON `args` as `owner`; `None` if there is no such tool.
-pub(crate) async fn call_api(app: &App, owner: &str, name: &str, args: Value) -> Option<AppResult<Value>> {
+/// `comment!(self, parts, f, args)`: call a comment fn as the owner, written by the real caller.
+macro_rules! comment {
+    ($s:ident, $p:ident, $f:ident, $a:ident) => {{
+        let o = user(&$p.0)?;
+        let by = author(&$p.0)?;
+        out($f(&$s.gym, o, &by, $a.0).await)
+    }};
+}
+
+#[tool_router(router = comment_router, vis = "pub(crate)")]
+impl Health {
+    #[tool(
+        description = "Start a comment thread about one workout, exercise or set, with its first comment. The owner and anyone they share gym data with can read and reply.",
+        annotations(
+            title = "Start comment thread",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn thread_start(&self, p: P, a: Parameters<ThreadStartArgs>) -> R {
+        comment!(self, p, thread_start, a)
+    }
+
+    #[tool(
+        description = "Reply in a comment thread. Replying to a resolved thread reopens it.",
+        annotations(
+            title = "Reply to comment",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn comment_reply(&self, p: P, a: Parameters<CommentReplyArgs>) -> R {
+        comment!(self, p, comment_reply, a)
+    }
+
+    #[tool(
+        description = "Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved.",
+        annotations(title = "List comments", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn comment_list(&self, p: P, a: Parameters<CommentListArgs>) -> R {
+        comment!(self, p, comment_list, a)
+    }
+
+    #[tool(
+        description = "Change the text of your own comment.",
+        annotations(
+            title = "Edit comment",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn comment_update(&self, p: P, a: Parameters<CommentUpdateArgs>) -> R {
+        comment!(self, p, comment_update, a)
+    }
+
+    #[tool(
+        description = "Delete a comment: your own, or any comment on your own logbook. It stays in its thread marked deleted.",
+        annotations(
+            title = "Delete comment",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn comment_delete(&self, p: P, a: Parameters<CommentDeleteArgs>) -> R {
+        comment!(self, p, comment_delete, a)
+    }
+
+    #[tool(
+        description = "Resolve a comment thread (or reopen it with resolved false). Whoever started it or the logbook's owner can.",
+        annotations(
+            title = "Resolve thread",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn thread_resolve(&self, p: P, a: Parameters<ThreadResolveArgs>) -> R {
+        comment!(self, p, thread_resolve, a)
+    }
+}
+
+/// Runs tool `name` with JSON `args` as `owner`, written by `by` (comments); `None` if there is no such tool.
+pub(crate) async fn call_api(app: &App, owner: &str, by: &Author, name: &str, args: Value) -> Option<AppResult<Value>> {
     macro_rules! with_args {
         ($f:ident) => {
             match serde_json::from_value(args) {
@@ -443,8 +539,20 @@ pub(crate) async fn call_api(app: &App, owner: &str, name: &str, args: Value) ->
                 Err(e) => Err(AppError::User(format!("invalid arguments: {e}"))),
             }
         };
+        ($f:ident, by) => {
+            match serde_json::from_value(args) {
+                Ok(a) => $f(app, owner, by, a).await,
+                Err(e) => Err(AppError::User(format!("invalid arguments: {e}"))),
+            }
+        };
     }
     Some(match name {
+        "thread_start" => with_args!(thread_start, by),
+        "comment_reply" => with_args!(comment_reply, by),
+        "comment_list" => with_args!(comment_list, by),
+        "comment_update" => with_args!(comment_update, by),
+        "comment_delete" => with_args!(comment_delete, by),
+        "thread_resolve" => with_args!(thread_resolve, by),
         "settings_get" => settings_get(app, owner).await,
         "settings_update" => with_args!(settings_update),
         "gym_create" => with_args!(gym_create),
