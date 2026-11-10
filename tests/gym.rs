@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, DurationRound, Utc};
 use health_mcp::gym::db::{App, AppError};
-use health_mcp::gym::{body_note, search, setup, workout};
+use health_mcp::gym::{body_note, comment, search, setup, workout};
+use health_mcp::share::Author;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -203,6 +204,35 @@ async fn stale_workout_with_only_a_body_note_is_kept(pool: PgPool) {
     assert_eq!(next["closed_stale"]["action"], "auto-finished (stale)");
     let notes = body_note::body_note_list(&app, ME, a(json!({}))).await.unwrap();
     assert_eq!(notes[0]["workout_id"], wid);
+}
+
+#[sqlx::test(migrations = false)]
+async fn stale_workout_with_only_a_comment_thread_is_kept(pool: PgPool) {
+    let app = app(pool).await;
+    seed(&app).await;
+    let w = workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(4)})))
+        .await
+        .unwrap();
+    let wid = w["workout"]["workout_id"].clone();
+    let me = Author {
+        sub: ME.into(),
+        email: None,
+    };
+    comment::thread_start(
+        &app,
+        ME,
+        &me,
+        a(json!({"target": "workout", "id": wid, "body": "Gym was packed"})),
+    )
+    .await
+    .unwrap();
+    // Deleting the workout would cascade to its thread: finish it instead.
+    let next = workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    assert_eq!(next["closed_stale"]["action"], "auto-finished (stale)");
+    let threads = comment::comment_list(&app, ME, &me, a(json!({"target": "workout"})))
+        .await
+        .unwrap();
+    assert_eq!(threads[0]["workout_id"], wid);
 }
 
 #[sqlx::test(migrations = false)]

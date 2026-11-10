@@ -19,7 +19,7 @@ struct Open {
     gym: String,
     last_activity: DateTime<Utc>,
     set_count: i64,
-    /// Workout notes, or a body note linked to it.
+    /// Workout notes, or a body note or comment thread linked to it.
     has_notes: bool,
 }
 
@@ -28,6 +28,7 @@ async fn open_workout(tx: &mut Tx, owner: &str) -> AppResult<Option<Open>> {
         "SELECT w.id, w.gym_id, g.name,
                 coalesce(max(s.performed_at), w.started_at), count(s.id),
                 w.notes <> '' OR EXISTS (SELECT 1 FROM body_note b WHERE b.workout_id = w.id)
+                    OR EXISTS (SELECT 1 FROM comment_thread c WHERE c.workout_id = w.id)
          FROM workout w JOIN gym g ON g.id = w.gym_id
          LEFT JOIN workout_set s ON s.workout_id = w.id
          WHERE w.owner_sub = $1 AND w.finished_at IS NULL

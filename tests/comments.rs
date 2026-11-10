@@ -3,8 +3,11 @@
 
 mod common;
 
+use axum::body::Body;
+use axum::http::{Request, header};
 use common::*;
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 /// `g` accepts a share of `o`'s data at these levels.
 async fn share(db: &health_mcp::db::Db, o: &Person, g: &Person, gym: &str, vitals: &str) {
@@ -195,6 +198,72 @@ async fn shared_users_comment_with_owner() {
     )
     .await;
     assert!(e.contains("no access to the gym data"), "{e}");
+}
+
+/// Calls a tool through `/mcp` as `who`; returns whether it failed and its text, parsed as JSON when it is JSON.
+async fn mcp(db: &health_mcp::db::Db, who: &Person, name: &str, args: Value) -> (bool, Value) {
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}});
+    let req = Request::post("/mcp")
+        .header(header::HOST, "health.example.com")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token(MCP, who)))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let res = app(db).oneshot(req).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let out: Value = serde_json::from_slice(&body).unwrap();
+    let result = &out["result"];
+    let text = result["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{out}"));
+    let parsed = serde_json::from_str(text).unwrap_or_else(|_| json!(text));
+    (result["isError"] == true, parsed)
+}
+
+/// The MCP path takes `owner` too: the trainer acts as themselves on the owner's logbook.
+#[tokio::test]
+async fn mcp_reply_and_delete_act_as_the_caller() {
+    let db = db(None).await;
+    let o = owner_with_data(&db).await;
+    let (_, set) = ids(&db, &o).await;
+    let trainer = person("trainer");
+    share(&db, &o, &trainer, "ro", "none").await;
+    let t = ok(
+        &db,
+        &o,
+        "thread_start",
+        json!({"target": "set", "id": set, "body": "Was this deep enough?"}),
+    )
+    .await;
+    let thread = t["thread_id"].as_i64().unwrap();
+    let owners = t["comments"][0]["id"].as_i64().unwrap();
+
+    let (failed, r) = mcp(
+        &db,
+        &trainer,
+        "comment_reply",
+        with_owner(&o, json!({"thread_id": thread, "body": "Yes"})),
+    )
+    .await;
+    assert!(!failed, "{r}");
+    let reply = &r["comments"][1];
+    assert_eq!(
+        (
+            reply["author"].clone(),
+            reply["by_owner"].clone(),
+            reply["yours"].clone()
+        ),
+        (json!(trainer.email()), json!(false), json!(true))
+    );
+    assert_eq!(r["comments"][0]["yours"], false);
+    let (failed, e) = mcp(
+        &db,
+        &trainer,
+        "comment_delete",
+        with_owner(&o, json!({"comment_id": owners})),
+    )
+    .await;
+    assert!(failed, "{e}");
+    assert!(e.to_string().contains("only its author or the owner"), "{e}");
 }
 
 #[tokio::test]
