@@ -100,6 +100,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      # The TypeScript tool types must match tools.json (itself checked by the Rust test tests/tools_json.rs).
+      - run: pnpm gen:tools && git diff --exit-code src/lib/api/tools.gen.ts
       - run: pnpm check
       - run: pnpm lint
       - run: pnpm test

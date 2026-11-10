@@ -7,3 +7,6 @@ bun.lockb
 
 # Miscellaneous
 /static/
+
+# Written by the Rust test tests/tools_json.rs; byte-for-byte what it compares against.
+src/lib/api/tools.json

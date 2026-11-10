@@ -1,38 +1,37 @@
 <script lang="ts">
-	import { Button } from '#lib/components/ui/button/index.js';
+	import { createQuery } from '@tanstack/svelte-query';
 	import * as Card from '#lib/components/ui/card/index.js';
-	import { plateClass, plateFor } from '#lib/plates.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
+	import { tool } from '#lib/api/client.js';
+	import { logbook } from '#lib/logbook.svelte.js';
 
-	// Placeholder until the app shell (#102): shows the theme with a sample of logged sets.
-	const sets = [
-		{ exercise: 'Back squat', reps: 8, kg: 60 },
-		{ exercise: 'Back squat', reps: 5, kg: 100 },
-		{ exercise: 'Leg press', reps: 12, kg: 140 }
-	];
+	// The first real data on the home page, through the same tools Claude uses.
+	const gyms = createQuery(() => ({
+		queryKey: [logbook.owner, 'gym_list', {}],
+		queryFn: () => tool('gym_list', {}, { owner: logbook.owner }) as Promise<unknown[]>,
+		enabled: logbook.canRead('gym')
+	}));
 </script>
 
-<main class="mx-auto grid max-w-xl gap-6 p-6">
+<div class="grid max-w-xl gap-4">
+	<h1 class="text-2xl font-semibold tracking-tight">
+		{logbook.owner ? `Logbook of ${logbook.owner}` : 'Your logbook'}
+	</h1>
 	<Card.Root>
 		<Card.Header>
-			<Card.Title class="text-2xl">Health</Card.Title>
-			<Card.Description>The web app is on its way. Example sets show the theme.</Card.Description>
+			<Card.Title>Gyms</Card.Title>
+			<Card.Description>Where workouts are logged.</Card.Description>
 		</Card.Header>
 		<Card.Content>
-			<ul class="grid gap-2">
-				{#each sets as set, i (i)}
-					<li class="flex items-center justify-between border-b py-2 last:border-0">
-						<span>{set.exercise}</span>
-						<span class="flex items-center gap-2 font-numerals text-xl tabular-nums">
-							<span class="h-5 w-1.5 rounded-sm {plateClass(plateFor(set.kg))}"></span>
-							{set.reps} × {set.kg}
-						</span>
-					</li>
-				{/each}
-			</ul>
+			{#if !logbook.canRead('gym')}
+				<p class="text-muted-foreground">This logbook's gym data isn't shared with you.</p>
+			{:else if gyms.isPending}
+				<Skeleton class="h-8 w-24" />
+			{:else if gyms.isError}
+				<p class="text-destructive">{gyms.error.message}</p>
+			{:else}
+				<p class="font-numerals text-3xl tabular-nums">{gyms.data.length}</p>
+			{/if}
 		</Card.Content>
-		<Card.Footer class="gap-2">
-			<Button>Add set</Button>
-			<Button variant="outline">Open logbook</Button>
-		</Card.Footer>
 	</Card.Root>
-</main>
+</div>
