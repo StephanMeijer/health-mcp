@@ -312,8 +312,12 @@ The app calls the same tools as MCP clients, with the same arguments and results
   body over 1 MiB after decompression → `413`; a transient database failure → `503 {"error": "temporarily unavailable, retry"}`,
   safe to retry: SQLSTATE class 40 (deadlock, serialization failure; not 40002), 08000/08003/08006 reported by the
   server, 53300 too many connections, 53100 disk full, 57P01–57P03 restart or failover, or no free pool connection.
-  A connection that drops mid-request is an internal error → `500`, as is anything else unexpected.
-  A `sql_query` statement timeout stays a `400`.
+  A database error in a typed tool's own SQL is the caller's (`400`) only when the data was refused: SQLSTATE class 22
+  (a bad value) or 23 (a CHECK, the reading range trigger, a key). Anything else there (a missing grant, an undefined
+  column, a statement timeout) is the server's fault: logged with its SQLSTATE and answered `500` (`internal error`
+  over MCP). A connection that drops mid-request is a `500` too, as is anything else unexpected.
+  `sql_query` runs the caller's own SQL, so every database message from it (syntax, permission, its 5 s timeout) stays
+  a `400`; its server-written setup (signing, `SET`s, rollback) is classified like a typed tool's.
 - `sql_query` reads through the same signed `vitals.*` views as over MCP, so the app sees only the user's rows.
 - The output of a tool has no schema beyond the description above; renaming a tool or an argument breaks the app as
   well as MCP clients.

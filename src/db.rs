@@ -152,7 +152,7 @@ pub fn retryable(code: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -165,8 +165,8 @@ mod tests {
         }
     }
 
-    /// A database error with SQLSTATE `code`, as Postgres would return it.
-    fn pg(code: &str) -> sqlx::Error {
+    /// A database error with SQLSTATE `code`, as Postgres would return it (message "message").
+    pub(crate) fn pg(code: &str) -> sqlx::Error {
         #[derive(Debug)]
         struct E(String);
         impl std::fmt::Display for E {

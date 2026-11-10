@@ -226,6 +226,46 @@ async fn validation_errors_reach_the_model() {
     }
 }
 
+/// #87: a fault in the server's own SQL (here a missing grant) is an internal error, logged, not the caller's.
+/// Its own fresh database, so the revoked grant can't touch the tests sharing the dev database.
+#[sqlx::test(migrations = false)]
+async fn server_faults_in_typed_tools_are_internal(owner: PgPool) {
+    sqlx::migrate!().run(&owner).await.unwrap();
+    let opts = owner.connect_options();
+    let as_role = |user: &str, password: &str| (*opts).clone().username(user).password(password);
+    let db = Db {
+        app: PgPool::connect_with(as_role("vitals_app", "app")).await.unwrap(),
+        reader: health_mcp::db::reader_pool_options()
+            .connect_with(as_role("vitals_reader", "reader"))
+            .await
+            .unwrap(),
+        gym: Default::default(),
+    };
+    sqlx::query("REVOKE SELECT ON vitals_data.hrv FROM vitals_app")
+        .execute(&owner)
+        .await
+        .unwrap();
+    let v = Health::new(db.clone());
+    let err = v
+        .reading_list(p(json!({"kind": "hrv"})), as_user("x"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, ToolError::Internal);
+    let req = Request::post("/v1/tools/reading_list")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({"kind": "hrv"}).to_string()))
+        .unwrap();
+    assert_eq!(api(&db, "x", req).await.0, 500);
+    // A refused value is still the caller's to fix, with the database's message.
+    let too_high = v
+        .reading_add(
+            p(json!({"kind": "heart_rate", "readings": [{"time": "2026-10-01T07:00:00Z", "bpm": 400}]})),
+            as_user("x"),
+        )
+        .await;
+    assert!(too_high.unwrap_err().to_string().contains("check constraint"));
+}
+
 #[tokio::test]
 async fn unknown_fields_are_rejected_not_dropped() {
     let (v, _, _) = setup().await;
