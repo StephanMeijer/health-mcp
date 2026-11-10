@@ -12,7 +12,7 @@ use sqlx::{AssertSqlSafe, Executor, SqlSafeStr};
 use uuid::Uuid;
 
 use crate::auth::User;
-use crate::db::{Db, retryable};
+use crate::db::{Db, DbFault, classify, retryable};
 
 pub type ToolResult = Result<String, ToolError>;
 
@@ -377,23 +377,37 @@ pub(crate) fn user(parts: &Parts) -> Result<&str, ToolError> {
         .ok_or_else(|| "unauthenticated".into())
 }
 
-/// Database messages (CHECK violations, SQL errors in sql_query) are useful to the model; anything else is internal.
+/// For the typed tools, which run server-written SQL: data the database refused (a CHECK, the range trigger, a bad
+/// value) is the caller's to fix and its message helps the model; a missing grant, an undefined column or a timeout
+/// is the server's fault, logged and reported as internal (see [`classify`]).
 fn db_err(e: sqlx::Error) -> ToolError {
-    match e {
-        sqlx::Error::Database(d) if d.code().is_some_and(|c| retryable(&c)) => {
-            tracing::warn!("transient database error: {d}");
+    match classify(&e) {
+        DbFault::Caller(m) => ToolError::User(m),
+        DbFault::Retry => {
+            tracing::warn!("transient database error: {e}");
             ToolError::Retry
         }
-        sqlx::Error::Database(d) => ToolError::User(d.message().to_owned()),
-        // Every connection busy: nothing ran, so trying again is safe.
-        sqlx::Error::PoolTimedOut => {
-            tracing::warn!("database pool timed out");
-            ToolError::Retry
-        }
-        e => {
-            tracing::error!("database error: {e}");
+        DbFault::Server => {
+            let code = match &e {
+                sqlx::Error::Database(d) => d.code().map(|c| c.into_owned()),
+                _ => None,
+            };
+            tracing::error!(
+                sqlstate = code.as_deref().unwrap_or("-"),
+                "database error in a typed tool: {e}"
+            );
             ToolError::Internal
         }
+    }
+}
+
+/// For the caller's own SQL in `sql_query` (not its server-written setup): every database message (syntax, permission,
+/// timeout) is about their query, so it goes back to them. Transient failures and anything outside the database stay
+/// as in [`db_err`].
+fn sql_err(e: sqlx::Error) -> ToolError {
+    match e {
+        sqlx::Error::Database(d) if !d.code().is_some_and(|c| retryable(&c)) => ToolError::User(d.message().to_owned()),
+        e => db_err(e),
     }
 }
 
@@ -800,7 +814,7 @@ impl Health {
         (&mut *tx)
             .prepare(AssertSqlSafe(sql.to_owned()).into_sql_str())
             .await
-            .map_err(db_err)?;
+            .map_err(sql_err)?;
         // Newline before `)` so a trailing `--` comment can't swallow the wrapper.
         // `t.*`, not `t`: a result column named `t` would otherwise shadow the whole row.
         // The byte cap runs in Postgres, so an oversized result never reaches this process: rows come back while
@@ -816,7 +830,7 @@ impl Health {
         )))
         .fetch_all(&mut *tx)
         .await
-        .map_err(db_err)?;
+        .map_err(sql_err)?;
         tx.rollback().await.map_err(db_err)?;
         let too_big = rows.last().is_some_and(Option::is_none);
         let rows: Vec<String> = rows.into_iter().flatten().collect();
@@ -977,6 +991,20 @@ impl ServerHandler for Health {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_tools_hide_server_faults_but_sql_query_does_not() {
+        use crate::db::tests::pg;
+        assert_eq!(db_err(pg("23514")), ToolError::User("message".into()));
+        assert_eq!(db_err(pg("40P01")), ToolError::Retry);
+        for code in ["42501", "42703", "57014", "XX000"] {
+            assert_eq!(db_err(pg(code)), ToolError::Internal, "{code}");
+            // The caller's own SQL: a permission error or a syntax error is about their query.
+            assert_eq!(sql_err(pg(code)), ToolError::User("message".into()), "{code}");
+        }
+        assert_eq!(sql_err(pg("40P01")), ToolError::Retry);
+        assert_eq!(sql_err(sqlx::Error::PoolTimedOut), ToolError::Retry);
+    }
     use serde_json::json;
 
     #[test]
