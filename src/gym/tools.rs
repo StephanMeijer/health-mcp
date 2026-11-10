@@ -5,12 +5,13 @@ use rmcp::handler::server::{tool::Extension, wrapper::Parameters};
 use rmcp::{tool, tool_router};
 use serde_json::Value;
 
+use crate::db::retryable;
 use crate::gym::body_note::*;
 use crate::gym::db::{App, AppError, AppResult};
 use crate::gym::search::*;
 use crate::gym::setup::*;
 use crate::gym::workout::*;
-use crate::tools::{Health, ToolError, ToolResult, retryable, user};
+use crate::tools::{Health, ToolError, ToolResult, user};
 
 pub(crate) const INSTRUCTIONS: &str = "\
 Gym logbook. Typical flow:

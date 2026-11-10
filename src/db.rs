@@ -111,3 +111,105 @@ impl Db {
         Ok(tx)
     }
 }
+
+/// What a database error means for whoever made the request. The typed tools, ingest and the device endpoints answer
+/// with it; `sql_query` doesn't (there every message is about the caller's own SQL).
+#[derive(Debug, PartialEq)]
+pub enum DbFault {
+    /// The data was refused for good (SQLSTATE class 22 data exception, class 23 integrity constraint violation,
+    /// including CHECKs and the reading range trigger): the message says what to change.
+    Caller(String),
+    /// Nothing ran and trying again is safe: see [`retryable`], or every pooled connection was busy.
+    Retry,
+    /// Anything else is the server's own fault (a missing grant, an undefined column, a statement timeout): log it,
+    /// tell the caller nothing more.
+    Server,
+}
+
+pub fn classify(e: &sqlx::Error) -> DbFault {
+    match e {
+        sqlx::Error::Database(d) => match d.code() {
+            Some(c) if retryable(&c) => DbFault::Retry,
+            Some(c) if c.starts_with("22") || c.starts_with("23") => DbFault::Caller(d.message().to_owned()),
+            _ => DbFault::Server,
+        },
+        sqlx::Error::PoolTimedOut => DbFault::Retry,
+        _ => DbFault::Server,
+    }
+}
+
+/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock) except 40002, a constraint
+/// violation that a retry repeats; connection lost (08000, 08003, 08006); too many connections (53300) or disk full
+/// (53100); and 57P01–57P03 (server shutting down or starting up, as in a restart or failover). Not the rest of 08
+/// and 53: a protocol violation (08P01), out of memory (53200) or a temp file limit (53400) fails the same way again.
+/// 57014 (a statement timeout) is not: the same query times out again.
+pub fn retryable(code: &str) -> bool {
+    (code.starts_with("40") && code != "40002")
+        || matches!(
+            code,
+            "08000" | "08003" | "08006" | "53300" | "53100" | "57P01" | "57P02" | "57P03"
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_errors_are_retryable() {
+        for code in ["40001", "40P01", "08006", "53300", "53100", "57P01", "57P03"] {
+            assert!(retryable(code), "{code}");
+        }
+        for code in ["40002", "57014", "23514", "42601", "22P02", "08P01", "53200", "53400"] {
+            assert!(!retryable(code), "{code}");
+        }
+    }
+
+    /// A database error with SQLSTATE `code`, as Postgres would return it.
+    fn pg(code: &str) -> sqlx::Error {
+        #[derive(Debug)]
+        struct E(String);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "error {}", self.0)
+            }
+        }
+        impl std::error::Error for E {}
+        impl sqlx::error::DatabaseError for E {
+            fn message(&self) -> &str {
+                "message"
+            }
+            fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+                Some(self.0.as_str().into())
+            }
+            fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+                self
+            }
+            fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+                self
+            }
+            fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+                self
+            }
+            fn kind(&self) -> sqlx::error::ErrorKind {
+                sqlx::error::ErrorKind::Other
+            }
+        }
+        sqlx::Error::Database(Box::new(E(code.into())))
+    }
+
+    #[test]
+    fn classifies_by_sqlstate() {
+        for code in ["23514", "23505", "23503", "22P02", "22007"] {
+            assert_eq!(classify(&pg(code)), DbFault::Caller("message".into()), "{code}");
+        }
+        for code in ["40P01", "40001", "57P01", "08006"] {
+            assert_eq!(classify(&pg(code)), DbFault::Retry, "{code}");
+        }
+        for code in ["42501", "42703", "57014", "XX000", "40002"] {
+            assert_eq!(classify(&pg(code)), DbFault::Server, "{code}");
+        }
+        assert_eq!(classify(&sqlx::Error::PoolTimedOut), DbFault::Retry);
+        assert_eq!(classify(&sqlx::Error::RowNotFound), DbFault::Server);
+    }
+}

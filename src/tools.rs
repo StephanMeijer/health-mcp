@@ -12,7 +12,7 @@ use sqlx::{AssertSqlSafe, Executor, SqlSafeStr};
 use uuid::Uuid;
 
 use crate::auth::User;
-use crate::db::Db;
+use crate::db::{Db, retryable};
 
 pub type ToolResult = Result<String, ToolError>;
 
@@ -395,19 +395,6 @@ fn db_err(e: sqlx::Error) -> ToolError {
             ToolError::Internal
         }
     }
-}
-
-/// SQLSTATE class 40 (transaction rollback: 40001 serialization, 40P01 deadlock) except 40002, a constraint
-/// violation that a retry repeats; connection lost (08000, 08003, 08006); too many connections (53300) or disk full
-/// (53100); and 57P01–57P03 (server shutting down or starting up, as in a restart or failover). Not the rest of 08
-/// and 53: a protocol violation (08P01), out of memory (53200) or a temp file limit (53400) fails the same way again.
-/// 57014 (sql_query's statement timeout) stays the caller's error.
-pub(crate) fn retryable(code: &str) -> bool {
-    (code.starts_with("40") && code != "40002")
-        || matches!(
-            code,
-            "08000" | "08003" | "08006" | "53300" | "53100" | "57P01" | "57P02" | "57P03"
-        )
 }
 
 fn range(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -998,15 +985,5 @@ mod tests {
             serde_json::from_value(json!({"time": "2026-10-01T07:00:00Z", "bpm": 60, "bpmm": 61})).unwrap();
         assert_eq!(r.values.bpm, Some(60));
         assert_eq!(r.values.unknown.keys().collect::<Vec<_>>(), ["bpmm"]);
-    }
-
-    #[test]
-    fn transient_errors_are_retryable() {
-        for code in ["40001", "40P01", "08006", "53300", "53100", "57P01", "57P03"] {
-            assert!(retryable(code), "{code}");
-        }
-        for code in ["40002", "57014", "23514", "42601", "22P02", "08P01", "53200", "53400"] {
-            assert!(!retryable(code), "{code}");
-        }
     }
 }
