@@ -107,6 +107,9 @@ pub(crate) enum Scope {
     Data(Domain, bool),
     /// sql_query: whatever domains are shared, read-only.
     Sql,
+    /// Comment threads (gym): gym `ro` is enough to read and write comments. Commenting is talking about the
+    /// logbook, not changing it; who may edit or delete which comment is checked by the tools (src/gym/comment.rs).
+    Comment,
 }
 
 /// Every tool's scope: the domain from the router that holds it, write from its `read_only_hint`.
@@ -124,6 +127,9 @@ static SCOPES: LazyLock<HashMap<String, Scope>> = LazyLock::new(|| {
     for t in Health::share_router().list_all() {
         m.insert(t.name.to_string(), Scope::Own);
     }
+    for t in Health::comment_router().list_all() {
+        m.insert(t.name.to_string(), Scope::Comment);
+    }
     m.insert("schema_describe".into(), Scope::Own);
     m.insert("sql_query".into(), Scope::Sql);
     m
@@ -140,6 +146,27 @@ pub(crate) const OWNER_DOC: &str = "Email of someone who shared their data with 
 pub(crate) struct Acting {
     pub user: User,
     pub domains: Domains,
+    /// The real caller.
+    pub author: Author,
+}
+
+/// Who is really calling, when [`User`] is the owner whose data a tool runs on. Comments record it.
+#[derive(Clone, Debug)]
+pub struct Author {
+    pub sub: String,
+    /// Verified, lowercased; shown next to their comments.
+    pub email: Option<String>,
+}
+
+/// The caller of a tool: set by [`act_as`] when it runs on shared data, else the user themselves.
+pub(crate) fn author(parts: &Parts) -> Result<Author, ToolError> {
+    if let Some(a) = parts.extensions.get::<Author>() {
+        return Ok(a.clone());
+    }
+    Ok(Author {
+        sub: user(parts)?.to_owned(),
+        email: parts.extensions.get::<VerifiedEmail>().map(|e| e.0.clone()),
+    })
 }
 
 /// Takes `owner` out of `args` and checks the caller may run `tool` on that owner's data.
@@ -182,7 +209,12 @@ pub(crate) async fn act_as(
         return Err(format!("{owner} has not shared data with you (share_list shows who has)").into());
     };
     let (gym, vitals) = (Access::parse(&gym), Access::parse(&vitals));
-    if let Scope::Data(domain, write) = scope {
+    let need = match scope {
+        Scope::Data(domain, write) => Some((domain, write)),
+        Scope::Comment => Some((Domain::Gym, false)),
+        Scope::Own | Scope::Sql => None,
+    };
+    if let Some((domain, write)) = need {
         let has = match domain {
             Domain::Gym => gym,
             Domain::Vitals => vitals,
@@ -196,6 +228,10 @@ pub(crate) async fn act_as(
         }
     }
     Ok(Some(Acting {
+        author: Author {
+            sub: caller.0.clone(),
+            email: email.map(|e| e.0.clone()),
+        },
         user: User(owner_sub),
         domains: Domains {
             gym: gym != Access::None,
@@ -676,7 +712,7 @@ mod tests {
     fn every_tool_has_a_scope_and_data_tools_say_whether_they_write() {
         for t in Health::tool_list() {
             let s = scope(&t.name).unwrap_or_else(|| panic!("{} has no scope", t.name));
-            if let Scope::Data(..) = s {
+            if matches!(s, Scope::Data(..) | Scope::Comment) {
                 let hint = t.annotations.as_ref().and_then(|a| a.read_only_hint);
                 assert!(hint.is_some(), "{} needs read_only_hint: it decides ro vs rw", t.name);
             }
@@ -687,6 +723,7 @@ mod tests {
         assert_eq!(scope("reading_list"), Some(Scope::Data(Domain::Vitals, false)));
         assert_eq!(scope("sql_query"), Some(Scope::Sql));
         assert_eq!(scope("share_invite"), Some(Scope::Own));
+        assert_eq!(scope("comment_reply"), Some(Scope::Comment));
         assert_eq!(scope("nope"), None);
     }
 }

@@ -923,7 +923,10 @@ impl Health {
         static TOOLS: std::sync::LazyLock<Vec<rmcp::model::Tool>> = std::sync::LazyLock::new(|| {
             let mut tools = Health::all_tools().list_all();
             for t in &mut tools {
-                if matches!(share::scope(&t.name), Some(Scope::Data(..) | Scope::Sql)) {
+                if matches!(
+                    share::scope(&t.name),
+                    Some(Scope::Data(..) | Scope::Sql | Scope::Comment)
+                ) {
                     let mut schema = (*t.input_schema).clone();
                     let props = schema.entry("properties").or_insert_with(|| json!({}));
                     props.as_object_mut().expect("properties is an object").insert(
@@ -938,9 +941,9 @@ impl Health {
         TOOLS.clone()
     }
 
-    /// The vitals, gym and sharing tools.
+    /// The vitals, gym, comment and sharing tools.
     fn all_tools() -> ToolRouter<Self> {
-        Self::tool_router() + Self::gym_router() + Self::share_router()
+        Self::tool_router() + Self::gym_router() + Self::comment_router() + Self::share_router()
     }
 
     /// Runs tool `name` with JSON `args` as `user`; `None` if there is no such tool.
@@ -967,6 +970,7 @@ impl Health {
         let owner = match acting {
             Some(a) => {
                 parts.extensions.insert(a.domains);
+                parts.extensions.insert(a.author);
                 a.user
             }
             None => {
@@ -978,6 +982,7 @@ impl Health {
         };
         let owner_sub = owner.0.clone();
         parts.extensions.insert(owner);
+        let author = share::author(&parts).expect("the user was just inserted");
         let x = Extension(parts);
         // Bad arguments are the caller's error, like a tool error: Some(Err).
         macro_rules! with_args {
@@ -1007,7 +1012,7 @@ impl Health {
             "share_remove" => with_args!(share_remove),
             "share_respond" => with_args!(share_respond),
             _ => {
-                return crate::gym::tools::call_api(&self.gym, &owner_sub, name, args)
+                return crate::gym::tools::call_api(&self.gym, &owner_sub, &author, name, args)
                     .await
                     .map(crate::gym::tools::out);
             }
@@ -1065,6 +1070,8 @@ workout_set    (id, workout_id → workout.id, exercise_id → exercise.id, perf
                 avg_speed_kmh, max_speed_kmh, notes, logged_at, updated_at)
                -- only set_type 'working' counts as training volume; weight_kg is per dumbbell, barbell total, or machine stack
 body_note      (id, owner_sub, noted_at, location, severity 1..10, notes, workout_id)  -- aches, pain, fatigue
+comment_thread (id, owner_sub, target 'workout'|'exercise'|'set', workout_id, exercise_id, set_id, started_by_sub, resolved_at, resolved_by_sub, created_at)  -- exactly the id of target is set
+comment        (id, thread_id → comment_thread.id, author_sub, author_email, body, created_at, edited_at, deleted_at)  -- deleted: body ''
 
 source is 'manual' for readings logged through this server, 'app' for trackers sent by the phone app, 'import' for importers.
 device_id → devices.id says which tracker recorded a row; NULL means unknown (manual, imported, or older app heart_rate rows), not "manual".
@@ -1115,6 +1122,7 @@ impl ServerHandler for Health {
                     Ok(Some(a)) => {
                         parts.extensions.insert(a.user);
                         parts.extensions.insert(a.domains);
+                        parts.extensions.insert(a.author);
                         parts.extensions.remove::<VerifiedEmail>();
                     }
                     Ok(None) => {}

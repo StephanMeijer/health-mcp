@@ -349,6 +349,30 @@ Code: `src/gym/`. Usage rules for the model are in the server instructions (`src
 - **Sorting:** names, machines and variants sort with `COLLATE "und-x-icu"`. The TimescaleDB image is musl-based, and its
   `en_US.utf8` collation sorts bytewise ("Technogym" before "matrix").
 
+### Comments
+
+Flat comment threads about one **workout**, **exercise** or **set** (migration 0012): a thread is a first comment plus
+replies in order, and a target can have several. `gym.comment_thread` binds to its target with exactly one of
+`workout_id`, `exercise_id` and `set_id` (a CHECK ties it to `target`), each a foreign key with `ON DELETE CASCADE`: a
+deleted set takes its threads with it. `gym.comment` holds the text, the author's `sub` and verified email, and
+`edited_at`/`deleted_at`. The app can show each kind in its own place.
+
+Access follows sharing (see Sharing):
+
+| Who | Can |
+|---|---|
+| the owner of the logbook | everything below, on their own data, and delete any comment or resolve any thread on it |
+| anyone the owner shares **gym** data with, `ro` or `rw` | read threads, start threads, reply (passing `owner`) |
+| the author of a comment | edit and delete it |
+| whoever started a thread | resolve or reopen it |
+
+Read-only gym access is enough to comment on purpose: a trainer who only reads the logbook should still be able to give
+feedback, and commenting doesn't change the logbook. `act_as` checks it through `Scope::Comment` (gym, at least `ro`),
+whatever the tools' `read_only_hint`. Because `act_as` makes the owner the tool's user, it also passes the real caller
+(`Author`) on, and comments are stored with that. A deleted comment keeps its place with an empty body; replying to a
+resolved thread reopens it. Tools: `thread_start`, `comment_reply`, `comment_list`, `comment_update`, `comment_delete`,
+`thread_resolve`. `sql_query` sees them through `vitals.comment_thread` and `vitals.comment`, filtered on the gym domain.
+
 ## Sharing
 
 An owner lets another user read (`ro`) or read and write (`rw`) their data, per domain: `gym` (the logbook) and

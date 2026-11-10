@@ -23,6 +23,7 @@ Rust (rmcp, axum, sqlx). Design and security model: [SPEC.md](SPEC.md).
 | **Set** | reps / weight / duration; `set_type` (`working` by default, or `warmup`, `partial`, `interrupted`: only working sets count towards volume, progress, records and the last session); the `machine` (brand) and grip or `variant`, both defaulting to the last one used for that exercise at that gym; `unilateral` with an optional `load_basis`; optional `rpe` and `rest_s`; for cardio, distance, intensity and what the screen shows (heart rate, calories, incline, speed); `performed_at` is separate from `logged_at`, and `time_estimated` marks a guessed time |
 | **Settings** | timezone, training `goal`, free-text `goals_notes`, `priority_muscle_groups` and `limitations` |
 | **Body note** | a dated ache, pain or fatigue: `location`, optional `severity` 1–10, notes and the workout it came up in |
+| **Comment thread** | a conversation about one workout, exercise or set: a first comment and replies, open or resolved. Written by the owner and anyone they share gym data with (`ro` is enough) |
 
 **Vitals** (schema `vitals_data`, TimescaleDB hypertables): `heart_rate`, `hrv`, `measurement` (one value per row; body fat and blood pressure live here), `sleep_session`/`sleep_stage`, and raw tracker tables (`ecg`, `acc`, …). See SPEC.md, Schema.
 
@@ -39,6 +40,7 @@ Rust (rmcp, axum, sqlx). Design and security model: [SPEC.md](SPEC.md).
 | Gym analysis | `training_overview`, `muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
 | Vitals | `reading_add/update/delete/list/aggregate`, `sleep_add/update/delete/list`, `summary` |
 | SQL | `schema_describe`, `sql_query` (read-only, through per-user views over both gym and vitals data) |
+| Comments | `thread_start`, `comment_reply`, `comment_list`, `comment_update`, `comment_delete`, `thread_resolve` |
 | Sharing | `share_invite`, `share_list`, `share_update`, `share_remove`, `share_respond`; every data tool and `sql_query` take `owner` |
 
 Wherever a gym tool takes a gym or exercise, you can give an id or a name, in any word order and with typos tolerated. An ambiguous or unknown name returns the candidates, so the model asks instead of guessing.
