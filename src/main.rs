@@ -10,7 +10,7 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::signal::unix::{SignalKind, signal};
 
 /// Typed tools and ingest. A request that waits longer than `ACQUIRE_TIMEOUT` for a connection fails retryably:
-/// a retry tool error or 503 from the typed tools, a 500 from ingest and devices.
+/// a retry tool error over MCP, a 503 from `/api` (tools, ingest and devices alike).
 const APP_CONNECTIONS: u32 = 10;
 /// `sql_query` only: fewer, so untrusted SQL can't take every connection the typed tools need.
 const READER_CONNECTIONS: u32 = 5;

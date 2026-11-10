@@ -17,7 +17,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 use uuid::Uuid;
 
 use crate::auth::{User, VerifiedEmail};
-use crate::db::Db;
+use crate::db::{Db, DbFault, classify};
 use crate::tools::{Health, SleepStage, ToolError};
 
 /// Applies to the decompressed body, so it also caps zip bombs.
@@ -186,7 +186,11 @@ impl Frame {
                 "sample_rate must be > 0 and x, y, z equally long",
             ),
             Frame::Battery { level, .. } => ((0..=100).contains(level), "level must be 0..=100"),
-            Frame::Status { event, .. } => (!event.is_empty(), "event must not be empty"),
+            // Postgres text can't hold NUL: caught here so the error names the frame.
+            Frame::Status { event, .. } => (
+                !event.is_empty() && !event.contains('\0'),
+                "event must be non-empty text without NUL characters",
+            ),
             Frame::SkinTemp {
                 sample_rate, celsius, ..
             } => (
@@ -444,6 +448,29 @@ const CHANGED_NIGHTS: &str = "WITH f AS (
 /// `changed` would decompress every compressed stage batch of the user (#123).
 const DELETE_STAGES: &str = "DELETE FROM vitals_data.sleep_stage WHERE user_id = $2 AND session_id = ANY($1)";
 
+/// A database error as the app should see it: data refused for good is a `400` the app doesn't retry (it then halves
+/// the batch to find the frame); a transient failure is a `503` it retries as is; anything else is the server's `500`.
+fn db_response(e: &sqlx::Error, what: &str) -> Response {
+    match classify(e) {
+        DbFault::Caller(m) => {
+            tracing::info!("{what} refused by the database: {e}");
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": m }))).into_response()
+        }
+        DbFault::Retry => {
+            tracing::warn!("{what} failed, retryable: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "temporarily unavailable, retry" })),
+            )
+                .into_response()
+        }
+        DbFault::Server => {
+            tracing::error!("{what} failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 pub enum StoreError {
     /// Index of the first frame whose `device_id` isn't one of the user's devices.
     UnknownDevice(usize),
@@ -571,10 +598,7 @@ async fn ingest(
             Json(json!({ "frame": i, "error": "unknown device_id: register it with POST /api/v1/devices" })),
         )
             .into_response(),
-        Err(StoreError::Db(e)) => {
-            tracing::error!("ingest of {} frames failed: {e}", frames.len());
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Err(StoreError::Db(e)) => db_response(&e, &format!("ingest of {} frames", frames.len())),
     }
 }
 
@@ -595,10 +619,7 @@ async fn list_devices(State(db): State<Db>, Extension(User(user)): Extension<Use
     };
     match devices.await {
         Ok(d) => Json(d).into_response(),
-        Err(e) => {
-            tracing::error!("listing devices failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Err(e) => db_response(&e, "listing devices"),
     }
 }
 
@@ -619,14 +640,15 @@ async fn register_device(
         Ok(Json(d)) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.body_text() }))).into_response(),
     };
-    // Mirrors the table CHECKs (chars, like Postgres length()).
+    // Mirrors the table CHECKs (chars, like Postgres length()); NUL can't be stored in text at all (BLE device
+    // information strings are often NUL-padded).
     if [&d.model, &d.serial]
         .iter()
-        .any(|s| !(1..=100).contains(&s.chars().count()))
+        .any(|s| !(1..=100).contains(&s.chars().count()) || s.contains('\0'))
     {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "model and serial must be 1..=100 characters" })),
+            Json(json!({ "error": "model and serial must be 1..=100 characters, without NUL characters" })),
         )
             .into_response();
     }
@@ -646,10 +668,7 @@ async fn register_device(
     };
     match id.await {
         Ok(id) => Json(json!({ "id": id })).into_response(),
-        Err(e) => {
-            tracing::error!("registering a device failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Err(e) => db_response(&e, "registering a device"),
     }
 }
 
@@ -705,6 +724,24 @@ pub fn router<S: Clone + Send + Sync + 'static>(db: Db) -> Router<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn database_errors_map_to_what_the_app_should_do() {
+        use crate::db::tests::pg;
+        let status = |code: &str| db_response(&pg(code), "test").status();
+        assert_eq!(status("23514"), StatusCode::BAD_REQUEST);
+        assert_eq!(status("22P05"), StatusCode::BAD_REQUEST);
+        assert_eq!(status("40P01"), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            db_response(&sqlx::Error::PoolTimedOut, "test").status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(status("42501"), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(db_response(&pg("23514"), "test").into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], br#"{"error":"message"}"#);
+    }
 
     /// The fixtures are from 2026-11-04 (a night ending 18:00); decode them as if it were then.
     fn now() -> DateTime<Utc> {
