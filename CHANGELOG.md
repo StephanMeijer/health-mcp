@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/StephanMeijer/health-mcp/compare/v0.5.1...v0.6.0) - 2026-11-10
+
+### Added
+
+- [**breaking**] merge gym-mcp into vitals-mcp as health-mcp: the gym logbook tools, schema `gym` and per-user gym views for `sql_query`. New crate, image (`ghcr.io/stephanmeijer/health-mcp`) and host; see the README for moving the gym data
+
+### Other
+
+- document the merged health-mcp
+- merge gym-mcp history
+
 ## [0.5.1](https://github.com/StephanMeijer/vitals-mcp/compare/v0.5.0...v0.5.1) - 2026-11-09
 
 ### Other
