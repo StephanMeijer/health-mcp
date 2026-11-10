@@ -194,3 +194,39 @@ pub async fn owner_with_data(db: &Db) -> Person {
     .await;
     o
 }
+
+/// A fake IdP token endpoint that hands out an `/api` access token for `who`.
+pub async fn token_endpoint(who: Person) -> String {
+    use axum::routing::post;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let idp = axum::Router::new().route(
+        "/token",
+        post(move |body: String| {
+            let who = who.clone();
+            async move {
+                // The server sends the code it got on the callback and its PKCE verifier.
+                assert!(
+                    body.contains("code=the-code") && body.contains("code_verifier="),
+                    "{body}"
+                );
+                axum::Json(json!({"access_token": token(API, &who), "token_type": "Bearer"}))
+            }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, idp).await });
+    format!("http://{addr}/token")
+}
+
+/// A `WebLogin` whose token endpoint hands out tokens for `who`.
+pub async fn web_login(who: &Person) -> WebLogin {
+    WebLogin {
+        client_id: "health-web".into(),
+        client_secret: "s".into(),
+        authorization_endpoint: "https://auth.example.com/api/oidc/authorization".into(),
+        token_endpoint: token_endpoint(who.clone()).await,
+        redirect_uri: format!("{PUBLIC}invite/callback"),
+        audience: API.into(),
+        http: reqwest::Client::new(),
+    }
+}

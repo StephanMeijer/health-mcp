@@ -71,6 +71,38 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
           access_token: ['email', 'email_verified']
   ```
 
+## Web sessions
+
+The web app at `/app` (built from `web/`, served by `web_app`; `WEB_DIR`) logs the browser in with the `health-web`
+client (below, Sharing) and keeps a server-side session. No tokens are stored.
+
+1. `GET /app/login?next=/app/...` redirects to Authelia with PKCE. State, the verifier and `next` go in a 10-minute
+   cookie `__Host-health_login` (HttpOnly, Secure, SameSite=Lax, path `/`), so a sibling subdomain can't plant its
+   own login. `next` must be a printable-ASCII path inside `/app`; anything else becomes `/app/`.
+2. `GET /app/callback` checks the state, exchanges the code and verifies the access token like an app token (aud
+   `PUBLIC_URL/api`, `email` only when verified). It then creates a session in `web.session` (migration 0013).
+   - The browser gets `__Host-session=<64 random hex>`, HttpOnly, Secure, SameSite=Lax, on path `/`; only its sha256 is
+     stored.
+   - A session ends 12 h after its last request (`last_seen`, refreshed at most once a minute) and 7 days after the
+     login at the latest.
+   - Expired rows are deleted on the next login.
+3. `/api` accepts the cookie when there is no bearer token, and sets the same `User` and `VerifiedEmail` as a token
+   would, so every tool, sharing and `owner` work unchanged.
+   - With the cookie, a request other than GET/HEAD/OPTIONS must carry `Origin: PUBLIC_URL` and
+     `X-Requested-With: health-web`, or it gets `403`. A cross-site form can't add that header, and a cross-site
+     fetch can't without CORS, which the server doesn't allow.
+   - Bearer requests are unchanged.
+4. `POST /app/logout` (same `Origin` and header rule) deletes the session. `GET /app/me` returns `{sub, email,
+   shared_with_you}` for the logbook switcher, or `401`.
+
+Trade-off: a user disabled in Authelia keeps an existing web session until it ends (12 h idle, 7 days at most).
+The session also keeps the email from the login for up to 7 days: if the address changes or stops being verified in
+Authelia, the old address still drives sharing and `owner` resolution until the session ends. Deleting their rows in
+`web.session` ends it at once.
+
+Every `/app` response carries `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so no
+other page can frame the app. There is no full CSP: the shell's inline theme script would need a hash.
+
 ## Schema
 
 All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
@@ -410,7 +442,7 @@ Authelia client for the invite page:
 ```yaml
         - client_id: 'health-web'
           client_secret: '$pbkdf2-sha512$…'
-          redirect_uris: ['https://health.example.com/invite/callback']
+          redirect_uris: ['https://health.example.com/invite/callback', 'https://health.example.com/app/callback']
           scopes: ['openid', 'email']
           claims_policy: 'health'
           grant_types: ['authorization_code']

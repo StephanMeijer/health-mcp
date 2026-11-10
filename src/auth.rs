@@ -167,36 +167,52 @@ async fn fetch_jwks(http: &reqwest::Client, uri: &str) -> reqwest::Result<JwkSet
 }
 
 /// Axum middleware for `/mcp` and `/api` (one `Verifier` each): 401 with RFC 9728 discovery, or inserts [`User`].
-pub async fn require(State(v): State<Arc<Verifier>>, mut req: Request, next: Next) -> Response {
-    let token = req
-        .headers()
+pub async fn require(State(v): State<Arc<Verifier>>, req: Request, next: Next) -> Response {
+    match bearer(&req) {
+        None => unauthorized(&v, false),
+        Some(t) => {
+            let t = t.to_owned();
+            authenticate(&v, &t, req, next).await
+        }
+    }
+}
+
+/// The bearer token of `req`, if it has one. RFC 7235 §2.1: the auth scheme is case-insensitive.
+pub(crate) fn bearer(req: &Request) -> Option<&str> {
+    req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        // RFC 7235 §2.1: the auth scheme is case-insensitive.
         .and_then(|h| h.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
-        .map(|(_, t)| t);
-    let error = match token {
-        None => None,
-        Some(t) => match v.identify(t).await {
-            Ok(Identity { sub, email }) => {
-                req.extensions_mut().insert(User(sub));
-                if let Some(e) = email {
-                    req.extensions_mut().insert(VerifiedEmail(e));
-                }
-                return next.run(req).await;
-            }
-            Err(e) => {
-                tracing::debug!("rejected token: {e}");
-                Some(r#", error="invalid_token""#)
-            }
-        },
-    };
-    let challenge = format!(
-        r#"Bearer resource_metadata="{}"{}"#,
-        v.metadata_url(),
-        error.unwrap_or("")
-    );
+        .map(|(_, t)| t)
+}
+
+/// Runs `next` as the holder of `token`, or answers 401 with `error="invalid_token"`.
+pub(crate) async fn authenticate(v: &Verifier, token: &str, mut req: Request, next: Next) -> Response {
+    match v.identify(token).await {
+        Ok(id) => {
+            insert_identity(&mut req, id);
+            next.run(req).await
+        }
+        Err(e) => {
+            tracing::debug!("rejected token: {e}");
+            unauthorized(v, true)
+        }
+    }
+}
+
+/// What every tool reads: [`User`], and [`VerifiedEmail`] when there is one.
+pub(crate) fn insert_identity(req: &mut Request, Identity { sub, email }: Identity) {
+    req.extensions_mut().insert(User(sub));
+    if let Some(e) = email {
+        req.extensions_mut().insert(VerifiedEmail(e));
+    }
+}
+
+/// 401 with RFC 9728 discovery; `invalid` adds `error="invalid_token"` (a token was sent but didn't verify).
+pub(crate) fn unauthorized(v: &Verifier, invalid: bool) -> Response {
+    let error = if invalid { r#", error="invalid_token""# } else { "" };
+    let challenge = format!(r#"Bearer resource_metadata="{}"{error}"#, v.metadata_url());
     (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, challenge)]).into_response()
 }
 
