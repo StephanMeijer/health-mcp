@@ -265,7 +265,9 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
   {"type":"sleep","device_id":2,"start_at":"…","end_at":"…","stages":[{"time":"…","stage":"light","duration_s":600}]}
   {"type":"recharge","device_id":2,"night":"2026-11-04","status":4,"ans_charge":2.5,"hrv_ms":48,"breathing_rate":14.5,"hr_bpm":52}
   ```
-  `sleep` stages are `awake`/`light`/`deep`/`rem`. A re-sent night with the same `start_at` is a no-op, including its stages.
+  `sleep` stages are `awake`/`light`/`deep`/`rem`. A re-sent night with the same `start_at` is a no-op when it's identical;
+  when its `end_at` or its stages differ, it replaces the stored night and its stages (the tracker may have finished its
+  analysis since). Two versions of one night in the same batch: the last one wins.
   `recharge`'s last three fields are optional.
   `ecg` and `acc` take an optional `"encoding":"delta"` (default `"absolute"`): each array then holds differences from
   the previous value, the first from 0, e.g. `"samples":[-12,52,-33]` for `[-12,40,7]`. The server stores the rebuilt
@@ -426,7 +428,8 @@ Limits (constants in the code):
   filtering and setting `user_id` from the token; a server bug could read or write rows of another user.
 - One invalid frame rejects its whole batch (`400`). A client that drops a batch on `400` loses its valid frames too.
   An unknown frame `type` is invalid too, so deploy a server that knows a new type before an app that sends it.
-- App sleep deduplicates on `start_at`: if the tracker later reports a night with a different start, it's a second session.
+- App sleep is keyed on `start_at`: a changed night with the same start replaces the stored one, but if the tracker
+  later reports a night with a different start, it's a second session.
 - `pg_stat_activity` shows the *text* of other users' running `sql_query` calls (it's the same reader role), but not their data.
 - Real Authelia tokens work in production for both clients: the claude.ai connector on `/mcp` and the vitals-android app
   on `/api`. That MCP tokens are rejected on `/api` and app tokens on `/mcp` is tested only with locally minted `at+jwt`
