@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8"
-base64 = "0.22.1"
+base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 ciborium = "0.2.2"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
