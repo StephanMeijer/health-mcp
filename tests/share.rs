@@ -260,29 +260,6 @@ async fn mcp_calls_take_owner_too() {
     assert!(out.contains(r#""isError":true"#) && out.contains("read-only"), "{out}");
 }
 
-/// A fake IdP token endpoint that hands out an `/api` access token for `who`.
-async fn token_endpoint(who: Person) -> String {
-    use axum::routing::post;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let idp = axum::Router::new().route(
-        "/token",
-        post(move |body: String| {
-            let who = who.clone();
-            async move {
-                // The server sends the code it got on the callback and its PKCE verifier.
-                assert!(
-                    body.contains("code=the-code") && body.contains("code_verifier="),
-                    "{body}"
-                );
-                axum::Json(json!({"access_token": token(API, &who), "token_type": "Bearer"}))
-            }
-        }),
-    );
-    tokio::spawn(async move { axum::serve(listener, idp).await });
-    format!("http://{addr}/token")
-}
-
 #[tokio::test]
 async fn invite_page_logs_in_and_accepts() {
     let (o, g) = (person("owner"), person("grantee"));

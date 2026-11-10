@@ -59,7 +59,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(db: Db, verifier: Arc<Verifier>)
         .with_state(Web { db, verifier })
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -68,7 +68,7 @@ fn esc(s: &str) -> String {
 }
 
 /// `body` is trusted HTML; escape anything from users with [`esc`].
-fn page(status: StatusCode, title: &str, body: &str) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title>
@@ -104,7 +104,7 @@ fn gone() -> Response {
     )
 }
 
-fn internal(e: impl std::fmt::Display) -> Response {
+pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
     tracing::error!("invite page: {e}");
     page(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -114,7 +114,7 @@ fn internal(e: impl std::fmt::Display) -> Response {
 }
 
 /// Codes are 64 hex characters; anything else can't match, so don't touch the database for it.
-fn valid_code(code: &str) -> bool {
+pub(crate) fn valid_code(code: &str) -> bool {
     code.len() == 64 && code.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -171,12 +171,12 @@ async fn decline(State(w): State<Web>, Path(code): Path<String>) -> Response {
 }
 
 /// 64 hex characters from the OS CSPRNG, for `state` and the PKCE verifier.
-fn random() -> String {
+pub(crate) fn random() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
 }
 
 /// RFC 7636 S256.
-fn challenge(verifier: &str) -> String {
+pub(crate) fn challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
@@ -221,14 +221,20 @@ struct CallbackQuery {
     error: Option<String>,
 }
 
-/// `(state, verifier, invite code)` from the login cookie.
-fn login_cookie(headers: &HeaderMap) -> Option<(String, String, String)> {
-    let value = headers
+/// The value of cookie `name` in `headers`.
+pub(crate) fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|h| h.to_str().ok())
         .flat_map(|h| h.split(';'))
-        .find_map(|c| c.trim().strip_prefix(&format!("{COOKIE}=")).map(str::to_owned))?;
+        .find_map(|c| c.trim().strip_prefix(&prefix).map(str::to_owned))
+}
+
+/// `(state, verifier, invite code)` from the login cookie.
+fn login_cookie(headers: &HeaderMap) -> Option<(String, String, String)> {
+    let value = read_cookie(headers, COOKIE)?;
     let mut it = value.split('.');
     let (s, v, c) = (it.next()?, it.next()?, it.next()?);
     (it.next().is_none() && valid_code(s) && valid_code(v) && valid_code(c)).then(|| (s.into(), v.into(), c.into()))
@@ -275,7 +281,7 @@ async fn finish_login(w: &Web, headers: &HeaderMap, q: CallbackQuery) -> Respons
             "<p>Open the invite link again.</p>",
         );
     };
-    let identity = match exchange(login, &w.verifier, &code, &verifier).await {
+    let identity = match exchange(login, &w.verifier, &code, &verifier, &login.redirect_uri).await {
         Ok(i) => i,
         Err(e) => return internal(format!("token exchange: {e}")),
     };
@@ -308,7 +314,13 @@ async fn finish_login(w: &Web, headers: &HeaderMap, q: CallbackQuery) -> Respons
 }
 
 /// Trades the authorization code for an access token and checks it like an app token.
-async fn exchange(login: &WebLogin, verifier: &Verifier, code: &str, pkce: &str) -> anyhow::Result<Identity> {
+pub(crate) async fn exchange(
+    login: &WebLogin,
+    verifier: &Verifier,
+    code: &str,
+    pkce: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<Identity> {
     #[derive(Deserialize)]
     struct Token {
         access_token: String,
@@ -320,7 +332,7 @@ async fn exchange(login: &WebLogin, verifier: &Verifier, code: &str, pkce: &str)
         .form(&[
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", &login.redirect_uri),
+            ("redirect_uri", redirect_uri),
             ("code_verifier", pkce),
         ])
         .send()

@@ -3,6 +3,7 @@ pub mod db;
 pub mod gym;
 pub mod ingest;
 pub mod mail;
+pub mod session;
 pub mod share;
 pub mod tools;
 pub mod web;
@@ -83,7 +84,9 @@ pub fn app(
 ) -> Router {
     let ready_db = db.clone();
     let last_ready = Arc::new(tokio::sync::Mutex::new(None::<(std::time::Instant, bool)>));
-    let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(api_verifier.clone(), auth::require));
+    let sessions = session::Sessions::new(db.clone(), api_verifier.clone());
+    // A bearer token (the phone apps) or the web app's session cookie.
+    let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(sessions.clone(), session::api_auth));
     let invite = web::router(db.clone(), api_verifier.clone());
 
     // Stateless: any replica can serve any request, no sticky sessions needed in K8s.
@@ -102,7 +105,9 @@ pub fn app(
         // After the MCP auth layer, which only wraps routes added before it.
         .nest("/api", api)
         // Public: the invite code is the secret, and accepting logs in itself.
-        .merge(invite);
+        .merge(invite)
+        // The web app's login, logout and /app/me; the files themselves come from `web_app`.
+        .merge(session::router(sessions));
     // Only /mcp and /api: discovery and health checks never queue behind them.
     limits(routes, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT)
         .route("/.well-known/oauth-protected-resource", get(auth::metadata))
@@ -172,7 +177,13 @@ pub fn web_app(dir: &std::path::Path) -> Router {
             ServeDir::new(dir).fallback(ServeFile::new(dir.join("200.html"))),
         )
         .layer(cache("no-cache"));
-    immutable.merge(rest)
+    // The app runs with the session cookie, so no other page may frame it (clickjacking). shortcut: only
+    // frame-ancestors, not a full CSP, which would need a hash of the shell's inline theme script.
+    let set = |k, v| SetResponseHeaderLayer::overriding(k, HeaderValue::from_static(v));
+    immutable
+        .merge(rest)
+        .layer(set(header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"))
+        .layer(set(header::X_FRAME_OPTIONS, "DENY"))
 }
 
 #[cfg(test)]
@@ -277,6 +288,19 @@ mod tests {
                 "{path}"
             );
         }
+        // Neither the shell nor a file may be framed by another page.
+        for path in ["/app/workouts/1", "/app/robots.txt", "/app/_app/immutable/a1b2.js"] {
+            let res = web_app(&dir)
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                res.headers()[header::CONTENT_SECURITY_POLICY],
+                "frame-ancestors 'none'",
+                "{path}"
+            );
+            assert_eq!(res.headers()[header::X_FRAME_OPTIONS], "DENY", "{path}");
+        }
         assert_eq!(get("/app/robots.txt").await.1, "robots");
         let (status, body, cache) = get("/app/_app/immutable/a1b2.js").await;
         assert_eq!((status, body.as_str()), (StatusCode::OK, "js"));
@@ -339,6 +363,41 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
         assert!(log.contains(r#"path="/app/workouts""#), "{log}");
+    }
+
+    #[tokio::test]
+    async fn session_routes_win_over_the_web_app_shell() {
+        let dir = std::env::temp_dir().join(format!("health-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("200.html"), "shell").unwrap();
+        let pool = || sqlx::PgPool::connect_lazy("postgres://localhost/none").unwrap();
+        let db = db::Db {
+            app: pool(),
+            reader: pool(),
+            gym: Default::default(),
+            share: Default::default(),
+        };
+        let app = app(
+            db,
+            "health.example.com".into(),
+            verifier(MCP),
+            verifier(API),
+            web_app(&dir),
+        );
+        // No web login configured: /app/login answers itself (503), not with the shell.
+        let res = app
+            .clone()
+            .oneshot(Request::get("/app/login").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let res = app
+            .oneshot(Request::get("/app/settings").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(&body[..], b"shell");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
