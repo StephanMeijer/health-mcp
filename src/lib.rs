@@ -283,6 +283,64 @@ mod tests {
     const MCP_CHALLENGE: &str =
         r#"Bearer resource_metadata="https://health.example.com/.well-known/oauth-protected-resource/mcp""#;
 
+    /// A JSON-RPC request to `/mcp` with a valid MCP token; returns the response body.
+    async fn mcp(body: serde_json::Value) -> String {
+        // Lazy pools that give up at once: listing and routing tools needs no database.
+        let pool = || {
+            sqlx::postgres::PgPoolOptions::new()
+                .acquire_timeout(Duration::from_millis(200))
+                .connect_lazy("postgres://localhost:1/none")
+                .unwrap()
+        };
+        let db = db::Db {
+            app: pool(),
+            reader: pool(),
+            gym: Default::default(),
+        };
+        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
+        let req = Request::post("/mcp")
+            .header(header::HOST, "health.example.com")
+            .header(header::AUTHORIZATION, bearer(MCP))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// #115: the MCP handler must serve the gym tools too, not only the vitals router `#[tool_handler]` defaults to.
+    #[tokio::test]
+    async fn mcp_lists_and_routes_vitals_and_gym_tools() {
+        let list = mcp(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).await;
+        let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let names: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{list}"))
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for name in [
+            "reading_list",
+            "sql_query",
+            "workout_list",
+            "set_add",
+            "training_overview",
+        ] {
+            assert!(names.contains(&name), "{name} missing from tools/list: {names:?}");
+        }
+        assert_eq!(names.len(), tools::Health::tool_list().len());
+
+        // Routed to the gym tool: it then fails on the lazy database, but it is found.
+        let call = mcp(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "workout_list", "arguments": {}}}))
+        .await;
+        assert!(!call.contains("-32602") && !call.contains("not found"), "{call}");
+        assert!(call.contains(r#""result""#), "{call}");
+    }
+
     #[test]
     fn endpoints_come_from_public_url() {
         let e = endpoints("https://health.example.com").unwrap();

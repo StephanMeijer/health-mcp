@@ -365,7 +365,7 @@ pub struct Health {
     db: Db,
     /// The gym tools' database handle (src/gym/tools.rs).
     pub(crate) gym: crate::gym::db::App,
-    #[allow(dead_code, reason = "used by the tool_handler macro")]
+    /// The vitals and gym tools (`all_tools`); `#[tool_handler]` lists and calls through it.
     tool_router: ToolRouter<Self>,
 }
 
@@ -969,7 +969,8 @@ WITH n AS (SELECT (t.time AT TIME ZONE 'Europe/Amsterdam')::date AS night, avg(c
 SELECT night, round(c::numeric, 2), round((c - avg(c) OVER (ORDER BY night ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING))::numeric, 2) AS delta
 FROM n ORDER BY night;"#;
 
-#[tool_handler]
+// The field, not the macro's default `Self::tool_router()`, which is the vitals router only (#115).
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for Health {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
