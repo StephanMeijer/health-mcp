@@ -101,7 +101,7 @@ async fn login_gives_a_cookie_that_works_on_the_api() {
     let (cookie, landed) = log_in(&db, "/app/workouts/3").await;
     assert_eq!(landed, "/app/workouts/3");
 
-    let (s, _, me) = send(
+    let (s, h, me) = send(
         &db,
         Request::get("/app/me")
             .header(header::COOKIE, &cookie)
@@ -110,6 +110,8 @@ async fn login_gives_a_cookie_that_works_on_the_api() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "frame-ancestors 'none'");
+    assert_eq!(h[header::X_FRAME_OPTIONS], "DENY");
     assert_eq!(
         (me["sub"].as_str(), me["email"].as_str()),
         (Some(who.sub.as_str()), who.email.as_deref())

@@ -50,12 +50,14 @@ impl Sessions {
 }
 
 pub fn router<S: Clone + Send + Sync + 'static>(s: Sessions) -> Router<S> {
-    Router::new()
-        .route("/app/login", get(login))
-        .route("/app/callback", get(callback))
-        .route("/app/logout", post(logout))
-        .route("/app/me", get(me))
-        .with_state(s)
+    crate::no_framing(
+        Router::new()
+            .route("/app/login", get(login))
+            .route("/app/callback", get(callback))
+            .route("/app/logout", post(logout))
+            .route("/app/me", get(me))
+            .with_state(s),
+    )
 }
 
 fn hash(token: &str) -> Vec<u8> {

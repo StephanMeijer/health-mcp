@@ -177,12 +177,16 @@ pub fn web_app(dir: &std::path::Path) -> Router {
             ServeDir::new(dir).fallback(ServeFile::new(dir.join("200.html"))),
         )
         .layer(cache("no-cache"));
-    // The app runs with the session cookie, so no other page may frame it (clickjacking). shortcut: only
-    // frame-ancestors, not a full CSP, which would need a hash of the shell's inline theme script.
+    no_framing(immutable.merge(rest))
+}
+
+/// The app runs with the session cookie, so no other page may frame anything under `/app` (clickjacking).
+/// shortcut: only frame-ancestors, not a full CSP, which would need a hash of the shell's inline theme script.
+pub(crate) fn no_framing<S: Clone + Send + Sync + 'static>(r: Router<S>) -> Router<S> {
+    use axum::http::HeaderValue;
+    use tower_http::set_header::SetResponseHeaderLayer;
     let set = |k, v| SetResponseHeaderLayer::overriding(k, HeaderValue::from_static(v));
-    immutable
-        .merge(rest)
-        .layer(set(header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"))
+    r.layer(set(header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"))
         .layer(set(header::X_FRAME_OPTIONS, "DENY"))
 }
 
