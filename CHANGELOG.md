@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/StephanMeijer/health-mcp/compare/v0.7.0...v0.7.1) - 2026-11-10
+
+### Added
+
+- *(gym)* comment threads on workouts, exercises and sets, for the owner and shared users
+
+### Fixed
+
+- *(api)* answer ingest and device data the database refuses for good with 400, transient failures with 503
+
 ## [0.7.0](https://github.com/StephanMeijer/health-mcp/compare/v0.6.1...v0.7.0) - 2026-11-10
 
 ### Added
