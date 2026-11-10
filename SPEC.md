@@ -292,8 +292,10 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
 | `401` | Missing or bad token, with the RFC 9728 challenge |
 | `408` | Took more than 60 s, including waiting for a free slot; retry (if it did commit, the retry is a no-op) |
 | `413` | Body over 32 MiB after decompression, more than 5000 frames, or more than 200 000 rows in total (`ecg` and `acc` samples and `sleep` stages); the app splits the batch and resends |
+| `400 {"error":"…"}` | The database refused the batch for good (SQLSTATE class 22 or 23: a value or constraint the frame checks don't cover); nothing was stored. No frame index, so the app halves the batch to find the frame |
 | `415` | Unsupported `Content-Type` or `Content-Encoding` |
-| `500` | Database error; retry |
+| `503 {"error":"temporarily unavailable, retry"}` | Nothing ran (deadlock, restart, failover, or no free pool connection within 5 s); retry as is |
+| `500` | Any other server-side failure, logged; retry |
 
 Ingest writes as `vitals_app`, always with `source = 'app'` and the token's `user_id`. Before inserting, the server checks
 every frame's `device_id` against the user's own devices (`WHERE user_id = $user`); app sleep stages only join app
@@ -306,7 +308,8 @@ Same auth as ingest.
 
 - `GET /api/v1/devices` → `200 [{"id":1,"model":"Polar H10","serial":"244E7234"}]`, the user's devices.
 - `POST /api/v1/devices` with `{"model":"Polar H10","serial":"244E7234"}` → `200 {"id":1}`. Idempotent: a known
-  `(model, serial)` returns its existing id. Both fields 1–100 characters, unknown fields are errors (`400`).
+  `(model, serial)` returns its existing id. Both fields 1–100 characters without NUL (Postgres text can't hold it;
+  BLE device information is often NUL-padded), unknown fields are errors (`400`).
 
 ### Tools
 
@@ -415,7 +418,7 @@ Limits (constants in the code):
 
 - Database pools: 10 connections for `vitals_app`, 5 for `vitals_reader`. A request that waits more than 5 s for a
   connection fails as a transient error: `/mcp` tools return a "retry" tool error, `/api/v1/tools/{name}` returns
-  `503`, and `/api/v1/ingest` and `/api/v1/devices` return `500` (which the app retries).
+  `503`, and so do `/api/v1/ingest` and `/api/v1/devices` (the app retries both `503` and `500`).
 - Requests: at most 16 `/mcp` and `/api` requests run at once across all users; more wait (bodies unread) until one
   finishes. A request that takes more than 60 s, waiting included, gets `408`. Discovery and health endpoints are exempt.
 

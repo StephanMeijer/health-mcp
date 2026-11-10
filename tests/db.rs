@@ -1116,6 +1116,30 @@ async fn ingest_checks_frame_times_against_the_real_clock() {
     assert_eq!(post(chrono::Utc::now().to_rfc3339()).await, 200);
 }
 
+/// #85: what Postgres can never store (NUL in text) is a 400 naming the frame, not a retryable 500.
+#[tokio::test]
+async fn nul_characters_are_rejected_not_retried() {
+    let (_, db, _) = setup().await;
+    let a = uid("alice");
+    let dev = register(&db, &a, "H10", "nul-test").await;
+    let frame = json!({"type": "status", "device_id": dev, "time": "2026-10-03T00:00:00Z", "event": "a\0b"});
+    let ok = json!({"type": "status", "device_id": dev, "time": "2026-10-03T00:00:01Z", "event": "connected"});
+    let body = format!("{ok}\n{frame}\n").into_bytes();
+    let (status, out) = post_ingest(&db, &a, "application/x-ndjson", None, body).await;
+    assert_eq!((status, out["frame"].clone()), (400, json!(1)), "{out}");
+    assert!(out["error"].as_str().unwrap().contains("NUL"), "{out}");
+
+    let req = Request::post("/v1/devices")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"model": "H10", "serial": "s\0"}).to_string(),
+        ))
+        .unwrap();
+    let (status, out) = api(&db, &a, req).await;
+    assert_eq!(status, 400, "{out}");
+    assert!(out["error"].as_str().unwrap().contains("NUL"), "{out}");
+}
+
 #[tokio::test]
 async fn ingest_rejects_unsupported_requests() {
     let (_, db, _) = setup().await;
