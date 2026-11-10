@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::{Router, middleware, routing::get};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
@@ -72,8 +72,15 @@ fn limits<S: Clone + Send + Sync + 'static>(router: Router<S>, max: usize, timeo
 }
 
 /// All routes. `verifier` guards `/mcp`, `api_verifier` guards `/api`: each has its own audience,
-/// so MCP tokens don't work on `/api` and vice versa. `host` is the only allowed `Host` for `/mcp`.
-pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier: Arc<auth::Verifier>) -> Router {
+/// so MCP tokens don't work on `/api` and vice versa. `host` is the only allowed `Host` for `/mcp`. `web` is the
+/// web app ([`web_app`]).
+pub fn app(
+    db: db::Db,
+    host: String,
+    verifier: Arc<auth::Verifier>,
+    api_verifier: Arc<auth::Verifier>,
+    web: Router,
+) -> Router {
     let ready_db = db.clone();
     let last_ready = Arc::new(tokio::sync::Mutex::new(None::<(std::time::Instant, bool)>));
     let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(api_verifier.clone(), auth::require));
@@ -104,6 +111,7 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
             "/.well-known/oauth-protected-resource/api",
             get(auth::metadata).with_state(api_verifier),
         )
+        .merge(web.with_state(()))
         // Outermost, so rejected requests (401, 408, 413) are logged too. Method and path only: query strings and
         // headers (the bearer token) never reach the log. Health checks are added after it to keep probes out.
         .layer(
@@ -138,6 +146,33 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
             }),
         )
         .with_state(verifier)
+}
+
+/// The web app (`web/`, built with `pnpm build`) at `/app`. A single-page app: any path that isn't a file gets the
+/// shell (`200.html`), except under `/app/_app/`, where a missing file is a real 404. Hashed assets are cached for a
+/// year; everything else is revalidated, so a deploy shows up on the next load. Without `dir`, `/app` is a 404.
+pub fn web_app(dir: &std::path::Path) -> Router {
+    use axum::http::HeaderValue;
+    use tower_http::services::{ServeDir, ServeFile};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    if !dir.join("200.html").is_file() {
+        tracing::warn!("no web app at {} (200.html missing): /app is not served", dir.display());
+        return Router::new();
+    }
+    let cache =
+        |v: &'static str| SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static(v));
+    let immutable = Router::new()
+        .nest_service("/app/_app/immutable", ServeDir::new(dir.join("_app/immutable")))
+        .layer(cache("public, max-age=31536000, immutable"));
+    let rest = Router::new()
+        .nest_service("/app/_app", ServeDir::new(dir.join("_app")))
+        .nest_service(
+            "/app",
+            ServeDir::new(dir).fallback(ServeFile::new(dir.join("200.html"))),
+        )
+        .layer(cache("no-cache"));
+    immutable.merge(rest)
 }
 
 #[cfg(test)]
@@ -212,6 +247,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_app_serves_the_shell_and_404s_missing_assets() {
+        let dir = std::env::temp_dir().join(format!("health-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("_app/immutable")).unwrap();
+        std::fs::write(dir.join("200.html"), "shell").unwrap();
+        std::fs::write(dir.join("_app/immutable/a1b2.js"), "js").unwrap();
+        std::fs::write(dir.join("robots.txt"), "robots").unwrap();
+        let get = |path: &'static str| {
+            let app = web_app(&dir);
+            async move {
+                let res = app
+                    .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let cache = res
+                    .headers()
+                    .get(header::CACHE_CONTROL)
+                    .map(|v| v.to_str().unwrap().to_owned());
+                let status = res.status();
+                let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+                (status, String::from_utf8(body.to_vec()).unwrap(), cache)
+            }
+        };
+        let no_cache = Some("no-cache".to_owned());
+        for path in ["/app", "/app/", "/app/workouts/1"] {
+            assert_eq!(
+                get(path).await,
+                (StatusCode::OK, "shell".into(), no_cache.clone()),
+                "{path}"
+            );
+        }
+        assert_eq!(get("/app/robots.txt").await.1, "robots");
+        let (status, body, cache) = get("/app/_app/immutable/a1b2.js").await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "js"));
+        assert!(cache.unwrap().contains("immutable"));
+        assert_eq!(get("/app/_app/immutable/gone.js").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get("/app/_app/version.json").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get("/other").await.0, StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // No build: nothing is served.
+        let res = web_app(std::path::Path::new("/nonexistent"))
+            .oneshot(Request::get("/app").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn web_app_requests_are_logged() {
+        #[derive(Clone, Default)]
+        struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log::default();
+        let writer = log.clone();
+        // Global: with a thread-local set_default the log stayed empty while other tests ran in parallel.
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .finish(),
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("health-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("200.html"), "shell").unwrap();
+        let pool = || sqlx::PgPool::connect_lazy("postgres://localhost:1/none").unwrap();
+        let db = db::Db {
+            app: pool(),
+            reader: pool(),
+            gym: Default::default(),
+            share: Default::default(),
+        };
+        let res = app(
+            db,
+            "health.example.com".into(),
+            verifier(MCP),
+            verifier(API),
+            web_app(&dir),
+        )
+        .oneshot(Request::get("/app/workouts").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains(r#"path="/app/workouts""#), "{log}");
+    }
+
+    #[tokio::test]
     async fn readyz_reports_an_unreachable_database() {
         // Port 1: nothing listens, so connecting fails at once.
         let pool = || sqlx::PgPool::connect_lazy("postgres://localhost:1/none").unwrap();
@@ -221,7 +351,13 @@ mod tests {
             gym: Default::default(),
             share: Default::default(),
         };
-        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
+        let app = app(
+            db,
+            "health.example.com".into(),
+            verifier(MCP),
+            verifier(API),
+            Router::new(),
+        );
         let res = app
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
             .await
@@ -272,7 +408,13 @@ mod tests {
             gym: Default::default(),
             share: Default::default(),
         };
-        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
+        let app = app(
+            db,
+            "health.example.com".into(),
+            verifier(MCP),
+            verifier(API),
+            Router::new(),
+        );
         // An unsupported Content-Type: past auth, /api answers 415 without touching the database.
         let mut req = Request::post(path).header(header::CONTENT_TYPE, "text/plain");
         if let Some(aud) = token {
@@ -306,7 +448,13 @@ mod tests {
             gym: Default::default(),
             share: Default::default(),
         };
-        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
+        let app = app(
+            db,
+            "health.example.com".into(),
+            verifier(MCP),
+            verifier(API),
+            Router::new(),
+        );
         let req = Request::post("/mcp")
             .header(header::HOST, "health.example.com")
             .header(header::AUTHORIZATION, bearer(MCP))

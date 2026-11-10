@@ -5,7 +5,9 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/ci.yml':
         - 'actions/checkout@v7.0.1'
+        - 'actions/setup-node@v7.1.0'
         - 'embarkstudios/cargo-deny-action@v2.1.1'
+        - 'pnpm/action-setup@v6.1.1'
         - 'release-plz/action@v0.5.148'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/docker.yml':
@@ -43,6 +45,11 @@ dependencies:
         commit: 'sha1-9000827ccba6bdab643e8b6fd33ac0654aef8333'
         owner_id: 44036562
         repo_id: 192626254
+    'actions/setup-node@v7.1.0':
+        ref: 'v7.1.0'
+        commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
+        owner_id: 44036562
+        repo_id: 189476904
     'actions/upload-artifact@v7.0.2':
         ref: 'v7.0.2'
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
@@ -78,6 +85,11 @@ dependencies:
         commit: 'sha1-3c6349835b2b7b196a839186cb8b78e02f7b5f25'
         owner_id: 44887257
         repo_id: 228054692
+    'pnpm/action-setup@v6.1.1':
+        ref: 'v6.1.1'
+        commit: 'sha1-73e46992e05b19abd31f2f3c20e0e7370d762115'
+        owner_id: 21320719
+        repo_id: 262289747
     'release-plz/action@v0.5.148':
         ref: 'v0.5.148'
         commit: 'sha1-66b324fd6c72d05d2a08568492ecdd62bfb8a62b'

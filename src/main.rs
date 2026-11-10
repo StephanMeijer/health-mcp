@@ -122,7 +122,9 @@ async fn main() -> anyhow::Result<()> {
             login,
         },
     };
-    let app = health_mcp::app(db, host, verifier, api_verifier);
+    // The web app's build: `web/build` from `pnpm build`, `/web` in the image.
+    let web_dir = std::path::PathBuf::from(env_or("WEB_DIR", "web/build"));
+    let app = health_mcp::app(db, host, verifier, api_verifier, health_mcp::web_app(&web_dir));
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;

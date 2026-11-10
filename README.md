@@ -70,6 +70,7 @@ docker run -p 8080:8080 \
 | `WORKOUT_STALE_AFTER` | default `3h` (`90m`, `45s` also work); at most `8760h` |
 | `SMTP_URL`, `MAIL_FROM` | invite mails, e.g. `smtp://user:pass@smtp.example.com:587?tls=required`; unset: `share_invite` returns the link to pass on |
 | `OIDC_WEB_CLIENT_ID`, `OIDC_WEB_CLIENT_SECRET` | the `health-web` client the invite page logs in with; unset: accept in the app or Claude |
+| `WEB_DIR` | the built web app, served at `/app`; default `web/build` (`/web` in the image). Without it, `/app` is a 404 |
 | `BIND_ADDR` | default `0.0.0.0:8080` |
 
 Probes: `/healthz` for liveness, `/readyz` for readiness (it checks both database pools).
@@ -110,6 +111,8 @@ pg_dump leaves out the generated search columns and resets the id sequences. gym
 docker compose up -d   # TimescaleDB on :55432 with dev roles
 DATABASE_URL=postgres://postgres:postgres@localhost:55432/health cargo test
 ```
+
+The web app lives in `web/` (Svelte 5, TypeScript, shadcn-svelte); see [web/README.md](web/README.md).
 
 `DATABASE_URL` is for the gym tests, which create a fresh database per test; the vitals tests use the dev database directly.
 

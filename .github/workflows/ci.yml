@@ -80,6 +80,31 @@ jobs:
         with:
           command: check advisories
 
+  # The web app (web/): type check, lint, unit tests and a production build.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Installs the pnpm version pinned in web/package.json (packageManager).
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
   # Build (don't push) both arches so a broken Dockerfile can't get tagged.
   docker-build:
     if: github.event_name != 'schedule'
@@ -94,7 +119,7 @@ jobs:
   # release run would leave the version untagged until the next push.
   release-plz-release:
     name: Tag and release
-    needs: [test, clippy, fmt, audit, docker-build]
+    needs: [test, clippy, fmt, audit, web, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/health-mcp'
     runs-on: ubuntu-latest
     permissions:
