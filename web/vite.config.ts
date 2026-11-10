@@ -18,8 +18,13 @@ export default defineConfig({
 		})
 	],
 	server: {
-		// `pnpm dev` talks to a health-mcp running locally (cargo run) for /api.
-		proxy: { '/api': 'http://localhost:8080' }
+		// `pnpm dev` talks to a health-mcp running locally (cargo run; HEALTH_API overrides) for /api and the login.
+		proxy: Object.fromEntries(
+			['/api', '/app/me', '/app/login', '/app/logout', '/app/callback'].map((p) => [
+				p,
+				process.env.HEALTH_API ?? 'http://localhost:8080'
+			])
+		)
 	},
 	test: {
 		expect: { requireAssertions: true },

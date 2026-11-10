@@ -1,0 +1,3309 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Log body note"
+    },
+    "description": "Log an ache, pain or fatigue: where, how bad (1-10), when, and optionally the workout it came up in.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "location": {
+          "description": "Where: a muscle group name when one fits (\"lower_back\", \"quads\"), otherwise free text (\"left knee\").",
+          "type": "string"
+        },
+        "noted_at": {
+          "description": "When, if not now. RFC 3339, or local time like \"2026-11-02 21:00\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "severity": {
+          "description": "How bad, 1 (barely noticeable) to 10 (can't train it).",
+          "format": "int16",
+          "maximum": 32767,
+          "minimum": -32768,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workout_id": {
+          "description": "The workout it came up in, if any.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "location"
+      ],
+      "type": "object"
+    },
+    "name": "body_note_add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete body note"
+    },
+    "description": "Delete a body note.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "body_note_delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List body notes"
+    },
+    "description": "Body notes over time, newest first, optionally by location and within from-to.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "from": {
+          "description": "From (inclusive). RFC 3339 or local time/date like \"2026-10-01\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "description": "Only notes whose location contains this (\"back\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "to": {
+          "description": "To (exclusive).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "body_note_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Correct body note"
+    },
+    "description": "Correct a body note's location, severity, time, notes or workout.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "noted_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "severity": {
+          "description": "1-10; 0 clears it.",
+          "format": "int16",
+          "maximum": 32767,
+          "minimum": -32768,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workout_id": {
+          "description": "0 unlinks it from its workout.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "body_note_update"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete comment"
+    },
+    "description": "Delete a comment: your own, or any comment on your own logbook. It stays in its thread marked deleted.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "comment_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comment_id"
+      ],
+      "type": "object"
+    },
+    "name": "comment_delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List comments"
+    },
+    "description": "Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved.",
+    "inputSchema": {
+      "$defs": {
+        "Target": {
+          "oneOf": [
+            {
+              "enum": [
+                "exercise"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "workout",
+              "description": "A training session.",
+              "type": "string"
+            },
+            {
+              "const": "set",
+              "description": "One logged set.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "include_resolved": {
+          "default": false,
+          "description": "Also resolved threads. Default false.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Most threads returned, newest first. Default 20, at most 100.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only threads about this kind of thing. With `id`, about that one workout, exercise or set."
+        }
+      },
+      "type": "object"
+    },
+    "name": "comment_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Reply to comment"
+    },
+    "description": "Reply in a comment thread. Replying to a resolved thread reopens it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "thread_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "thread_id",
+        "body"
+      ],
+      "type": "object"
+    },
+    "name": "comment_reply"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Edit comment"
+    },
+    "description": "Change the text of your own comment.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The new text; replaces the old.",
+          "type": "string"
+        },
+        "comment_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comment_id",
+        "body"
+      ],
+      "type": "object"
+    },
+    "name": "comment_update"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Alternative exercises"
+    },
+    "description": "Exercises that train the same muscles (shared primary first, then secondary), with the gym's equipment text (default: the current gym) to judge what's possible.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "exercise": {
+          "type": "string"
+        },
+        "gym": {
+          "description": "Default: the gym of the open workout. Its equipment text is returned so you can judge what's possible there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "exercise"
+      ],
+      "type": "object"
+    },
+    "name": "exercise_alternatives"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create exercise"
+    },
+    "description": "Create an exercise with its muscle groups and the equipment it needs (free text). Search first to avoid duplicates.",
+    "inputSchema": {
+      "$defs": {
+        "ExerciseKind": {
+          "oneOf": [
+            {
+              "const": "strength",
+              "description": "Reps and weight (default).",
+              "type": "string"
+            },
+            {
+              "const": "cardio",
+              "description": "Duration, distance and intensity: bike, treadmill, rower.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equipment": {
+          "description": "Free text: what it needs (\"dumbbells + flat bench\"). Empty = bodyweight.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExerciseKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default strength."
+        },
+        "muscle_groups": {
+          "default": [],
+          "description": "Primary (target) muscles. From: chest, lats, upper_back, lower_back, front_delts, side_delts, rear_delts,\nbiceps, triceps, forearms, core, glutes, quads, hamstrings, adductors, abductors, calves, neck.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Specific enough to compare weights: \"Dumbbell bench press\", not \"bench\".",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "secondary_muscle_groups": {
+          "default": [],
+          "description": "Muscles that assist (bench press: triceps, front_delts). Same list, no overlap with muscle_groups.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "exercise_create"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Find exercises"
+    },
+    "description": "Find exercises by name (typos ok) and/or muscle group.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "muscle_group": {
+          "description": "Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Words to match in the name or aliases (typos are tolerated). Omit to list all.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "exercise_search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Update exercise"
+    },
+    "description": "Change an exercise's name, aliases, description, muscle groups or equipment.",
+    "inputSchema": {
+      "$defs": {
+        "ExerciseKind": {
+          "oneOf": [
+            {
+              "const": "strength",
+              "description": "Reps and weight (default).",
+              "type": "string"
+            },
+            {
+              "const": "cardio",
+              "description": "Duration, distance and intensity: bike, treadmill, rower.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "aliases": {
+          "description": "Replaces the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equipment": {
+          "description": "Replaces the equipment text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exercise": {
+          "description": "Exercise name, alias, or id.",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExerciseKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "muscle_groups": {
+          "description": "Primary muscles; replaces the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "secondary_muscle_groups": {
+          "description": "Replaces the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "exercise"
+      ],
+      "type": "object"
+    },
+    "name": "exercise_update"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create gym"
+    },
+    "description": "Create a gym.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "description": "Other names you use for it (\"ndsm\", \"trainmore noord\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "equipment": {
+          "description": "Free text: what the gym has, and what it lacks if that's known, e.g.\n\"2 leg presses (max 300 kg), dumbbells 2-40 kg in 2 kg steps, cable towers, mats. No sled.\"",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "gym_create"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Show gym"
+    },
+    "description": "A gym with its equipment text and notes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "gym": {
+          "description": "Gym name, alias, or id.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gym"
+      ],
+      "type": "object"
+    },
+    "name": "gym_get"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List gyms"
+    },
+    "description": "All gyms with their last workout date.",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "gym_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Update gym"
+    },
+    "description": "Change a gym's name, aliases, equipment or notes (free text: replace it, or append a line).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "aliases": {
+          "description": "Replaces the alias list.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "equipment": {
+          "description": "Replaces the whole equipment text. To add something, use equipment_append.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equipment_append": {
+          "description": "Adds this as a new line under the existing equipment text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gym": {
+          "description": "Gym name, alias, or id.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "description": "Replaces the whole notes text. To add something, use notes_append.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes_append": {
+          "description": "Adds this as a new line under the existing notes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gym"
+      ],
+      "type": "object"
+    },
+    "name": "gym_update"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Muscle volume over a period"
+    },
+    "description": "One row per muscle group over a period (default the last 7 days; or days, or any from-to range such as this week or last month), optionally only some muscle_groups: weighted sets and reps (primary 1, secondary 0.5; timed sets without reps add no reps), sets per week, distinct exercises, training days, average RPE, days since, and every exercise behind it with its role.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "days": {
+          "description": "The last N days up to now (1-365). Default 7 when from is not given.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Start of a fixed period, inclusive. RFC 3339 or local (\"2026-10-01\"): this week = from Monday's date,\nlast month = from the 1st of last month to the 1st of this month.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "muscle_groups": {
+          "description": "Only these muscle groups (default all). Coarse names work too: back, shoulders, legs, arms.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "to": {
+          "description": "End of a fixed period, exclusive. Default now.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "muscle_group_volume"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Personal records"
+    },
+    "description": "Personal records per exercise: heaviest set, best estimated 1RM, max reps at each weight, best volume workout; for cardio longest distance, best pace and longest duration.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "exercise": {
+          "description": "Omit for every exercise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "personal_records"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Progress over time"
+    },
+    "description": "Time series per day/week/month of top weight, estimated 1RM, volume, sets or reps, or for cardio distance, duration, pace, average heart rate, average speed or calories, for an exercise or a muscle group.",
+    "inputSchema": {
+      "$defs": {
+        "Bucket": {
+          "enum": [
+            "day",
+            "week",
+            "month"
+          ],
+          "type": "string"
+        },
+        "Metric": {
+          "oneOf": [
+            {
+              "enum": [
+                "top_weight",
+                "e1rm",
+                "volume",
+                "sets",
+                "reps"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "distance",
+              "description": "Cardio: total metres.",
+              "type": "string"
+            },
+            {
+              "const": "duration",
+              "description": "Cardio: total seconds.",
+              "type": "string"
+            },
+            {
+              "const": "pace",
+              "description": "Cardio: best (lowest) seconds per km.",
+              "type": "string"
+            },
+            {
+              "const": "avg_hr",
+              "description": "Cardio: average heart rate over time (sets weighted by duration_s), bpm.\nSets without duration_s are left out: their share of the time is unknown.",
+              "type": "string"
+            },
+            {
+              "const": "avg_speed",
+              "description": "Cardio: average speed over time (sets weighted by duration_s), km/h. Sets without duration_s are left out.",
+              "type": "string"
+            },
+            {
+              "const": "calories",
+              "description": "Cardio: total kcal.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "bucket": {
+          "$ref": "#/$defs/Bucket",
+          "description": "Default week (ISO, Monday start, local time)."
+        },
+        "exercise": {
+          "description": "Give exactly one of exercise or muscle_group.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "machine": {
+          "description": "Only sets on a machine whose name contains this. With an exercise, points are already split per machine and variant.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metric": {
+          "$ref": "#/$defs/Metric"
+        },
+        "muscle_group": {
+          "description": "Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "description": "Only sets whose grip or variant contains this.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "metric"
+      ],
+      "type": "object"
+    },
+    "name": "progress"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Log readings"
+    },
+    "description": "Log 1–1000 manual readings of one kind. heart_rate takes `bpm`, hrv `rmssd_ms`; every other kind takes `value` in a fixed unit: weight, muscle_mass, bone_mass kg; body_fat, body_water, spo2 %; height, waist, hip, neck cm; visceral_fat level; temperature °C; glucose mmol/L; systolic, diastolic mmHg; pulse bpm. Blood pressure is two readings (systolic, diastolic) at the same time, plus pulse if measured.",
+    "inputSchema": {
+      "$defs": {
+        "Kind": {
+          "description": "What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type\n(migration 0008) with one `value` in a fixed unit.",
+          "enum": [
+            "heart_rate",
+            "hrv",
+            "weight",
+            "body_fat",
+            "height",
+            "waist",
+            "hip",
+            "neck",
+            "muscle_mass",
+            "bone_mass",
+            "body_water",
+            "visceral_fat",
+            "spo2",
+            "temperature",
+            "glucose",
+            "systolic",
+            "diastolic",
+            "pulse"
+          ],
+          "type": "string"
+        },
+        "Reading": {
+          "description": "Values of one reading. Only the fields of the chosen `kind` are allowed.",
+          "properties": {
+            "bpm": {
+              "description": "heart_rate: beats per minute.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "note": {
+              "description": "Free-text note.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rmssd_ms": {
+              "description": "hrv: RMSSD in milliseconds.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "time": {
+              "description": "When it was measured (RFC 3339).",
+              "format": "date-time",
+              "type": "string"
+            },
+            "value": {
+              "description": "Every kind except heart_rate and hrv: the value in the kind's unit (convert lb → kg, in → cm, °F → °C,\nmg/dL → mmol/L by dividing by 18).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "time"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "readings": {
+          "items": {
+            "$ref": "#/$defs/Reading"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "readings"
+      ],
+      "type": "object"
+    },
+    "name": "reading_add"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Aggregate readings"
+    },
+    "description": "Aggregate one field per time bucket: n, avg, min, max, stddev, p50, p90. E.g. daily resting heart rate, weekly weight trend. At most 1000 buckets; truncated = true means use a wider bucket or a shorter range.",
+    "inputSchema": {
+      "$defs": {
+        "Kind": {
+          "description": "What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type\n(migration 0008) with one `value` in a fixed unit.",
+          "enum": [
+            "heart_rate",
+            "hrv",
+            "weight",
+            "body_fat",
+            "height",
+            "waist",
+            "hip",
+            "neck",
+            "muscle_mass",
+            "bone_mass",
+            "body_water",
+            "visceral_fat",
+            "spo2",
+            "temperature",
+            "glucose",
+            "systolic",
+            "diastolic",
+            "pulse"
+          ],
+          "type": "string"
+        },
+        "Source": {
+          "description": "Where a reading came from: the `vitals.source` enum (migration 0003).",
+          "enum": [
+            "manual",
+            "app",
+            "import"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "description": "Bucket width as a Postgres interval, e.g. \"1 day\", \"1 week\", \"1 hour\". Default \"1 day\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field": {
+          "description": "Field to aggregate: \"bpm\" for heart_rate, \"rmssd_ms\" for hrv, \"value\" for every other kind.",
+          "type": "string"
+        },
+        "from": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Source"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this source."
+        },
+        "to": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tz": {
+          "description": "IANA time zone for day/week boundaries, e.g. \"Europe/Amsterdam\". Default \"UTC\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "field"
+      ],
+      "type": "object"
+    },
+    "name": "reading_aggregate"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete readings"
+    },
+    "description": "Delete manual readings of one kind, by exact times or by a [from, to) range. Imported readings are never deleted.",
+    "inputSchema": {
+      "$defs": {
+        "Kind": {
+          "description": "What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type\n(migration 0008) with one `value` in a fixed unit.",
+          "enum": [
+            "heart_rate",
+            "hrv",
+            "weight",
+            "body_fat",
+            "height",
+            "waist",
+            "hip",
+            "neck",
+            "muscle_mass",
+            "bone_mass",
+            "body_water",
+            "visceral_fat",
+            "spo2",
+            "temperature",
+            "glucose",
+            "systolic",
+            "diastolic",
+            "pulse"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Or delete all manual readings in [from, to).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "times": {
+          "default": [],
+          "description": "Exact times of manual readings to delete.",
+          "items": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "to": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "reading_delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List readings"
+    },
+    "description": "List raw readings of one kind in a time range (default: last 30 days), newest first.",
+    "inputSchema": {
+      "$defs": {
+        "Kind": {
+          "description": "What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type\n(migration 0008) with one `value` in a fixed unit.",
+          "enum": [
+            "heart_rate",
+            "hrv",
+            "weight",
+            "body_fat",
+            "height",
+            "waist",
+            "hip",
+            "neck",
+            "muscle_mass",
+            "bone_mass",
+            "body_water",
+            "visceral_fat",
+            "spo2",
+            "temperature",
+            "glucose",
+            "systolic",
+            "diastolic",
+            "pulse"
+          ],
+          "type": "string"
+        },
+        "Source": {
+          "description": "Where a reading came from: the `vitals.source` enum (migration 0003).",
+          "enum": [
+            "manual",
+            "app",
+            "import"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Default: 30 days before `to`.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "limit": {
+          "description": "Max rows, default 100, at most 1000.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "oldest_first": {
+          "default": false,
+          "description": "Newest first (default) or oldest first.",
+          "type": "boolean"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Source"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this source."
+        },
+        "to": {
+          "description": "Default: now.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "reading_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Update reading"
+    },
+    "description": "Change fields of one manual reading, identified by kind and exact time. Imported readings cannot be changed.",
+    "inputSchema": {
+      "$defs": {
+        "Kind": {
+          "description": "What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type\n(migration 0008) with one `value` in a fixed unit.",
+          "enum": [
+            "heart_rate",
+            "hrv",
+            "weight",
+            "body_fat",
+            "height",
+            "waist",
+            "hip",
+            "neck",
+            "muscle_mass",
+            "bone_mass",
+            "body_water",
+            "visceral_fat",
+            "spo2",
+            "temperature",
+            "glucose",
+            "systolic",
+            "diastolic",
+            "pulse"
+          ],
+          "type": "string"
+        },
+        "Values": {
+          "description": "Values of one reading. Only the fields of the chosen `kind` are allowed.",
+          "properties": {
+            "bpm": {
+              "description": "heart_rate: beats per minute.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "note": {
+              "description": "Free-text note.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rmssd_ms": {
+              "description": "hrv: RMSSD in milliseconds.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "value": {
+              "description": "Every kind except heart_rate and hrv: the value in the kind's unit (convert lb → kg, in → cm, °F → °C,\nmg/dL → mmol/L by dividing by 18).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "set": {
+          "$ref": "#/$defs/Values",
+          "description": "Fields to overwrite."
+        },
+        "time": {
+          "description": "Exact time of the manual reading to change.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "time",
+        "set"
+      ],
+      "type": "object"
+    },
+    "name": "reading_update"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Describe SQL views"
+    },
+    "description": "Describe the views available to sql_query: columns, units and example queries. Call before writing SQL.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "schema_describe"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Search"
+    },
+    "description": "Free-text search across gym and exercise names, equipment texts, descriptions and notes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "limit": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Free text: names (typos ok) and words in notes/descriptions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Log sets"
+    },
+    "description": "Log one or more sets of one exercise (one entry per set) to the open workout.",
+    "inputSchema": {
+      "$defs": {
+        "LoadBasis": {
+          "description": "What weight_kg means on a unilateral set. Omit for the default convention.",
+          "oneOf": [
+            {
+              "const": "default",
+              "description": "The default convention; in set_update, clears an earlier load_basis.",
+              "type": "string"
+            },
+            {
+              "const": "per_implement",
+              "description": "The number on one dumbbell/kettlebell.",
+              "type": "string"
+            },
+            {
+              "const": "per_side",
+              "description": "The load one side moved.",
+              "type": "string"
+            },
+            {
+              "const": "total",
+              "description": "The load for both sides together.",
+              "type": "string"
+            }
+          ]
+        },
+        "SetInput": {
+          "description": "Cardio metrics, read off the machine's screen or a photo of it.",
+          "properties": {
+            "avg_hr": {
+              "description": "Average heart rate, bpm.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "avg_incline_pct": {
+              "description": "Incline in percent; negative = decline.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "avg_speed": {
+              "description": "In speed_unit (default km/h).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "calories": {
+              "description": "kcal.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "distance_m": {
+              "description": "Cardio: distance in metres (\"7.5 km\" = 7500).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "duration_s": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "intensity": {
+              "description": "Cardio: machine setting as free text, e.g. \"level 12, incline 6%\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_hr": {
+              "description": "Maximum heart rate, bpm.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_incline_pct": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_speed": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "notes": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "performed_at": {
+              "description": "When the set was performed, if not just now. RFC 3339, or local time like \"19:40\" on a date: \"2026-11-02 19:40\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reps": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rest_s": {
+              "description": "Rest before this set, in seconds.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rpe": {
+              "description": "Effort 1-10 in half steps. Reps in reserve map as RPE = 10 - RIR (\"2 left in the tank\" = 8).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "set_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SetType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Default working. Warm-ups and sets cut short don't count towards volume, progress or PRs."
+            },
+            "speed_unit": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SpeedUnit"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Unit of avg_speed / max_speed; mph is converted to km/h."
+            },
+            "time_estimated": {
+              "description": "performed_at is a guess (\"around noon\").",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "weight_kg": {
+              "description": "The number on the implement: per dumbbell/kettlebell; barbell = total incl. bar; machine = stack setting.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "SetType": {
+          "description": "Only working sets count towards volume, progress, PRs and last_session.",
+          "oneOf": [
+            {
+              "enum": [
+                "working"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "warmup",
+              "description": "Warm-up, e.g. an empty bar before the working sets.",
+              "type": "string"
+            },
+            {
+              "const": "partial",
+              "description": "Deliberately partial range of motion.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "Stopped early (cramp, pain, equipment, phone call).",
+              "type": "string"
+            }
+          ]
+        },
+        "SpeedUnit": {
+          "enum": [
+            "kmh",
+            "mph"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "exercise": {
+          "description": "Exercise name, alias, or id.",
+          "type": "string"
+        },
+        "load_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoadBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For all these sets; omit for the default convention."
+        },
+        "machine": {
+          "description": "Machine brand/model for all these sets (\"Technogym Selection\"), read off the photo when visible.\nOmit to reuse the last machine for this exercise at this gym; \"\" = unknown.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "sets": {
+          "description": "One entry per set, in the order performed. \"10/8/6 on 20kg\" = three entries.",
+          "items": {
+            "$ref": "#/$defs/SetInput"
+          },
+          "type": "array"
+        },
+        "unilateral": {
+          "description": "One arm/leg at a time: reps are per side and each set counts once per side. Default false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "variant": {
+          "description": "Grip or variant for all these sets (\"neutral grip\", \"wide\", \"seated\").\nOmit to reuse the last variant for this exercise at this gym; \"\" = standard.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workout_id": {
+          "description": "Only for logging into a past (finished) workout; then every set needs performed_at. Default: the open workout.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "exercise",
+        "sets"
+      ],
+      "type": "object"
+    },
+    "name": "set_add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete set"
+    },
+    "description": "Delete one or more logged sets (set_ids for several at once; all or nothing). Returns the workout for set_id, {\"workouts\": [...]} for set_ids.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "set_id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "set_ids": {
+          "description": "Instead of set_id: delete several sets at once (all or nothing).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "set_delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Find sets"
+    },
+    "description": "Find sets by exercise, muscle group, equipment, gym, date range, weight and reps; sort by date, weight, reps, volume, estimated 1RM, or for cardio distance or pace.",
+    "inputSchema": {
+      "$defs": {
+        "SetOrder": {
+          "oneOf": [
+            {
+              "enum": [
+                "performed_at",
+                "reps",
+                "volume",
+                "e1rm"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "weight",
+              "description": "Per-side load (`load_kg`).",
+              "type": "string"
+            },
+            {
+              "const": "distance",
+              "description": "Cardio: longest first.",
+              "type": "string"
+            },
+            {
+              "const": "pace",
+              "description": "Cardio: seconds per km; pass desc false for fastest first.",
+              "type": "string"
+            }
+          ]
+        },
+        "SetType": {
+          "description": "Only working sets count towards volume, progress, PRs and last_session.",
+          "oneOf": [
+            {
+              "enum": [
+                "working"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "warmup",
+              "description": "Warm-up, e.g. an empty bar before the working sets.",
+              "type": "string"
+            },
+            {
+              "const": "partial",
+              "description": "Deliberately partial range of motion.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "Stopped early (cramp, pain, equipment, phone call).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "desc": {
+          "description": "Default true (newest / heaviest first).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "equipment": {
+          "description": "Only exercises whose equipment text contains this, e.g. \"dumbbell\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exercise": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Inclusive. RFC 3339 or a local date/time (\"2026-10-01\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gym": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "machine": {
+          "description": "Only sets on a machine whose name contains this, e.g. \"technogym\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_reps": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_weight_kg": {
+          "description": "Compares the per-side load (`load_kg`), not the logged weight_kg.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_reps": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_weight_kg": {
+          "description": "Compares the per-side load (`load_kg`), not the logged weight_kg.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "muscle_group": {
+          "description": "Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "order_by": {
+          "$ref": "#/$defs/SetOrder"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "set_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default: all types."
+        },
+        "to": {
+          "description": "Exclusive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "description": "Only sets whose grip or variant contains this, e.g. \"neutral\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "set_search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Correct set"
+    },
+    "description": "Correct one or more logged sets (weight, reps, time, exercise, notes). Pass set_ids to apply the same change to several sets at once; all or nothing. Returns the workout for set_id, {\"workouts\": [...]} for set_ids. performed_at takes a single set.",
+    "inputSchema": {
+      "$defs": {
+        "LoadBasis": {
+          "description": "What weight_kg means on a unilateral set. Omit for the default convention.",
+          "oneOf": [
+            {
+              "const": "default",
+              "description": "The default convention; in set_update, clears an earlier load_basis.",
+              "type": "string"
+            },
+            {
+              "const": "per_implement",
+              "description": "The number on one dumbbell/kettlebell.",
+              "type": "string"
+            },
+            {
+              "const": "per_side",
+              "description": "The load one side moved.",
+              "type": "string"
+            },
+            {
+              "const": "total",
+              "description": "The load for both sides together.",
+              "type": "string"
+            }
+          ]
+        },
+        "SetType": {
+          "description": "Only working sets count towards volume, progress, PRs and last_session.",
+          "oneOf": [
+            {
+              "enum": [
+                "working"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "warmup",
+              "description": "Warm-up, e.g. an empty bar before the working sets.",
+              "type": "string"
+            },
+            {
+              "const": "partial",
+              "description": "Deliberately partial range of motion.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "Stopped early (cramp, pain, equipment, phone call).",
+              "type": "string"
+            }
+          ]
+        },
+        "SpeedUnit": {
+          "enum": [
+            "kmh",
+            "mph"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "avg_hr": {
+          "description": "Average heart rate, bpm.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "avg_incline_pct": {
+          "description": "Incline in percent; negative = decline.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "avg_speed": {
+          "description": "In speed_unit (default km/h).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "calories": {
+          "description": "kcal.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "distance_m": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "duration_s": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "exercise": {
+          "description": "Move the set to another exercise (name, alias, or id).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "intensity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "load_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoadBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only on unilateral sets; default = back to the default convention."
+        },
+        "machine": {
+          "description": "\"\" = unknown.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_hr": {
+          "description": "Maximum heart rate, bpm.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_incline_pct": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_speed": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "performed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reps": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rest_s": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rpe": {
+          "description": "1-10 in half steps.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "set_id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "set_ids": {
+          "description": "Instead of set_id: apply the same change to several sets at once (all or nothing).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "set_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "speed_unit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeedUnit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unit of avg_speed / max_speed; mph is converted to km/h."
+        },
+        "time_estimated": {
+          "description": "The time is a guess (\"around noon\"). Passing a new time clears it unless this says it's still estimated.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unilateral": {
+          "description": "Reps are per side; the set counts once per side. false also clears load_basis.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "variant": {
+          "description": "Grip or variant; \"\" = standard.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weight_kg": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "set_update"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Show settings"
+    },
+    "description": "Show the user's settings (timezone, goal, goals notes, priority muscle groups, limitations), now and today.",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "settings_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Update settings"
+    },
+    "description": "Update settings; only the fields passed change. Timezone (IANA, defines today/weeks/months), goal, goals_notes (free text incl. events and dates), priority_muscle_groups, limitations. \"\" or [] clears a field.",
+    "inputSchema": {
+      "$defs": {
+        "Goal": {
+          "enum": [
+            "strength",
+            "hypertrophy",
+            "endurance",
+            "general"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Goal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What training is for; recommendations use it for rep ranges and progression."
+        },
+        "goals_notes": {
+          "description": "Free-text goals and plans, including events and deadlines (\"Hyrox on 14 March, bench 100 kg by summer\").\n\"\" clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limitations": {
+          "description": "Injuries or limitations to work around (\"left shoulder: no overhead pressing\"). \"\" clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "priority_muscle_groups": {
+          "description": "Muscle groups to prioritise; coarse names (back, shoulders, legs, arms) expand. [] clears it.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "timezone": {
+          "description": "IANA timezone, e.g. \"Europe/Amsterdam\". Used for \"today\", weeks (ISO, Monday) and months, and for reading local times.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "settings_update"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+      "title": "Share data"
+    },
+    "description": "Invite someone by email to see (ro) or also change (rw) your gym logbook and/or vitals. They get a mail with a link to accept; the invite expires in 7 days. Inviting the same address again replaces the pending invite.",
+    "inputSchema": {
+      "$defs": {
+        "Access": {
+          "description": "How much of one domain an owner shares.",
+          "oneOf": [
+            {
+              "enum": [
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "ro",
+              "description": "Read only.",
+              "type": "string"
+            },
+            {
+              "const": "rw",
+              "description": "Read and write.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "description": "Email address of the person to share with. They accept with a login that has this verified address.",
+          "type": "string"
+        },
+        "gym": {
+          "$ref": "#/$defs/Access",
+          "description": "Your gym logbook: none (default), ro (read) or rw (read and write)."
+        },
+        "vitals": {
+          "$ref": "#/$defs/Access",
+          "description": "Your vitals: none (default), ro or rw."
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "type": "object"
+    },
+    "name": "share_invite"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List shares"
+    },
+    "description": "Who you share with, who shares with you (pass their email as `owner` to other tools), and pending invites sent and received (accept or decline received ones with share_respond).",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "share_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Remove share"
+    },
+    "description": "Remove one thing, chosen by `what`: revoke (stop sharing your data with email), leave (stop seeing the data email shares with you) or withdraw (cancel your pending invite to email). The other directions are kept.",
+    "inputSchema": {
+      "$defs": {
+        "Remove": {
+          "description": "What `share_remove` removes: exactly one of these, never the others.",
+          "oneOf": [
+            {
+              "const": "revoke",
+              "description": "Stop sharing your data with them.",
+              "type": "string"
+            },
+            {
+              "const": "leave",
+              "description": "Stop seeing their data.",
+              "type": "string"
+            },
+            {
+              "const": "withdraw",
+              "description": "Cancel your pending invite to them.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "description": "Email of someone you share with, who shares with you, or whom you invited.",
+          "type": "string"
+        },
+        "what": {
+          "$ref": "#/$defs/Remove",
+          "description": "The one thing to remove."
+        }
+      },
+      "required": [
+        "email",
+        "what"
+      ],
+      "type": "object"
+    },
+    "name": "share_remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Answer invite"
+    },
+    "description": "Accept or decline an invite you received (invite_id from share_list). Accepting needs a login with the invited, verified email.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "accept": {
+          "description": "true to accept, false to decline.",
+          "type": "boolean"
+        },
+        "invite_id": {
+          "description": "Id of a received invite, from share_list.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "invite_id",
+        "accept"
+      ],
+      "type": "object"
+    },
+    "name": "share_respond"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Change share"
+    },
+    "description": "Change what you share with someone who accepted your invite. Setting both gym and vitals to none stops sharing with them.",
+    "inputSchema": {
+      "$defs": {
+        "Access": {
+          "description": "How much of one domain an owner shares.",
+          "oneOf": [
+            {
+              "enum": [
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "ro",
+              "description": "Read only.",
+              "type": "string"
+            },
+            {
+              "const": "rw",
+              "description": "Read and write.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "description": "Email of someone you share with.",
+          "type": "string"
+        },
+        "gym": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Access"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New access to your gym logbook; omit to keep it."
+        },
+        "vitals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Access"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New access to your vitals; omit to keep it."
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "type": "object"
+    },
+    "name": "share_update"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Log sleep"
+    },
+    "description": "Log a manual sleep session, optionally with stage segments (awake, light, deep, rem).",
+    "inputSchema": {
+      "$defs": {
+        "SleepStage": {
+          "additionalProperties": false,
+          "properties": {
+            "duration_s": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "stage": {
+              "$ref": "#/$defs/Stage"
+            },
+            "time": {
+              "description": "Start of this stage segment.",
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "time",
+            "stage",
+            "duration_s"
+          ],
+          "type": "object"
+        },
+        "Stage": {
+          "enum": [
+            "awake",
+            "light",
+            "deep",
+            "rem"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "end_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "stages": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SleepStage"
+          },
+          "type": "array"
+        },
+        "start_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_at",
+        "end_at"
+      ],
+      "type": "object"
+    },
+    "name": "sleep_add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete sleep"
+    },
+    "description": "Delete a manual sleep session and its stages.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Id of a manual sleep session.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sleep_delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List sleep"
+    },
+    "description": "List sleep sessions starting in a range (default: last 30 days) with hours and seconds per stage. At most 1000 sessions, and with include_stages at most 1000 stage segments in total; truncated = true means narrow the range.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Sessions starting in [from, to). Default: last 30 days.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_stages": {
+          "default": false,
+          "description": "Include every stage segment, not just per-stage totals.",
+          "type": "boolean"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "to": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "sleep_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Update sleep"
+    },
+    "description": "Change a manual sleep session; `stages` replaces all its stages.",
+    "inputSchema": {
+      "$defs": {
+        "SleepStage": {
+          "additionalProperties": false,
+          "properties": {
+            "duration_s": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "stage": {
+              "$ref": "#/$defs/Stage"
+            },
+            "time": {
+              "description": "Start of this stage segment.",
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "time",
+            "stage",
+            "duration_s"
+          ],
+          "type": "object"
+        },
+        "Stage": {
+          "enum": [
+            "awake",
+            "light",
+            "deep",
+            "rem"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "end_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Id of a manual sleep session.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "stages": {
+          "description": "If given, replaces all stages of the session.",
+          "items": {
+            "$ref": "#/$defs/SleepStage"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "start_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sleep_update"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Run SQL query"
+    },
+    "description": "Run one read-only SQL query (PostgreSQL + TimescaleDB, e.g. time_bucket, percentile_cont) over your own data. 5 s timeout, at most 1000 rows and 1 MiB. Call schema_describe first.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "sql": {
+          "description": "One read-only SELECT (or WITH … SELECT) over the views listed by schema_describe.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "type": "object"
+    },
+    "name": "sql_query"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Vitals summary"
+    },
+    "description": "Overview: latest reading of every vital, 7- and 30-day averages, and sleep duration and stage split.",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "summary"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Resolve thread"
+    },
+    "description": "Resolve a comment thread (or reopen it with resolved false). Whoever started it or the logbook's owner can.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "resolved": {
+          "description": "true resolves the thread, false reopens it.",
+          "type": "boolean"
+        },
+        "thread_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "thread_id",
+        "resolved"
+      ],
+      "type": "object"
+    },
+    "name": "thread_resolve"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Start comment thread"
+    },
+    "description": "Start a comment thread about one workout, exercise or set, with its first comment. The owner and anyone they share gym data with can read and reply.",
+    "inputSchema": {
+      "$defs": {
+        "Target": {
+          "oneOf": [
+            {
+              "enum": [
+                "exercise"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "workout",
+              "description": "A training session.",
+              "type": "string"
+            },
+            {
+              "const": "set",
+              "description": "One logged set.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The first comment.",
+          "type": "string"
+        },
+        "exercise": {
+          "description": "For target exercise: its name or alias instead of `id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Id of the workout, exercise or set.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/Target",
+          "description": "What the thread is about."
+        }
+      },
+      "required": [
+        "target",
+        "body"
+      ],
+      "type": "object"
+    },
+    "name": "thread_start"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Training overview"
+    },
+    "description": "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, and body notes from the last 14 days.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "gym": {
+          "description": "Gym name, alias, or id. Default: the gym of the open workout.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "training_overview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Add past workout"
+    },
+    "description": "Record a workout that already happened (created finished). Then set_add with its workout_id and performed_at.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "finished_at": {
+          "type": "string"
+        },
+        "gym": {
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "RFC 3339, or local time like \"2026-11-01 18:00\".",
+          "type": "string"
+        },
+        "time_estimated": {
+          "description": "The times are a guess (\"sometime Saturday afternoon\").",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "gym",
+        "started_at",
+        "finished_at"
+      ],
+      "type": "object"
+    },
+    "name": "workout_add_past"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Show current workout"
+    },
+    "description": "The open workout with all its sets, grouped by exercise.",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "workout_current"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Finish workout"
+    },
+    "description": "Finish the open workout.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "finished_at": {
+          "description": "When you left, if not now. Must be at or after the last set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "workout_finish"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List workouts"
+    },
+    "description": "Past workouts with their sets, filterable by gym, exercise and date.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "exercise": {
+          "description": "Only workouts that include this exercise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gym": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Default 10, max 50.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "workout_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Start or resume workout"
+    },
+    "description": "Start a workout at a gym, or resume the open one if it's the same gym.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "finish_open": {
+          "default": false,
+          "description": "Set true to finish a workout that is still open at a *different* gym and start this one.",
+          "type": "boolean"
+        },
+        "gym": {
+          "description": "Gym name, alias, or id (\"ndsm trainmore\").",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "When you arrived, if not now. RFC 3339, or local time like \"2026-11-02 18:05\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "gym"
+      ],
+      "type": "object"
+    },
+    "name": "workout_start"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Correct workout"
+    },
+    "description": "Correct a workout's start/finish time, gym or notes. shift_sets moves its sets along with the start time.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "finished_at": {
+          "description": "Setting this on the open workout finishes it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gym": {
+          "description": "Move the workout to another gym (name, alias, or id).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "shift_sets": {
+          "default": false,
+          "description": "Move every set by the same offset as started_at, keeping their spacing (\"the whole session was an hour\nlater\"). The finish moves too, unless finished_at is given.",
+          "type": "boolean"
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time_estimated": {
+          "description": "started_at is a guess. Passing a new started_at clears it unless this says it's still estimated.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "workout_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "workout_id"
+      ],
+      "type": "object"
+    },
+    "name": "workout_update"
+  }
+]
