@@ -2,6 +2,8 @@
 //! `GET`/`POST /api/v1/devices`: the user's devices, whose numeric ids the frames carry.
 //! `GET /api/v1/tools`, `POST /api/v1/tools/{name}`: the MCP tools, for the app.
 
+use std::collections::HashSet;
+
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -12,6 +14,7 @@ use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_http::decompression::RequestDecompressionLayer;
+use uuid::Uuid;
 
 use crate::auth::User;
 use crate::db::Db;
@@ -403,7 +406,8 @@ const INSERTS: [(&str, &[&str]); 8] = [
                SELECT $2, 'app', device_id, start_at, end_at FROM jsonb_to_recordset($1)
                  AS f(device_id int, start_at timestamptz, end_at timestamptz)
                ON CONFLICT DO NOTHING",
-            // Joins on the natural key, so a re-sent night adds no stages to its stored session.
+            // store() runs CHANGED_NIGHTS and DELETE_STAGES before this one. Joins on the natural key: a new night gets
+            // its stages, a replaced one its new stages; for an identical resend every stage is already there.
             "INSERT INTO vitals_data.sleep_stage (time, user_id, session_id, stage, duration_s)
                SELECT g.time, $2, s.id, g.stage, g.duration_s
                FROM jsonb_to_recordset($1) AS f(device_id int, start_at timestamptz, stages jsonb)
@@ -414,6 +418,31 @@ const INSERTS: [(&str, &[&str]); 8] = [
         ],
     ),
 ];
+
+/// A re-sent night (same natural key) that differs from the stored one replaces it: the tracker may have finished its
+/// analysis since (#90). Changed means another end_at or another list of stages; an identical resend, the usual case
+/// after a retry, matches nothing and rewrites nothing. A new night has no stages yet, so it matches too and loses
+/// nothing. Sets the new end_at and returns the changed sessions, whose stages [`DELETE_STAGES`] then removes.
+const CHANGED_NIGHTS: &str = "WITH f AS (
+       SELECT * FROM jsonb_to_recordset($1) AS f(device_id int, start_at timestamptz, end_at timestamptz, stages jsonb)),
+     changed AS (
+       SELECT s.id, f.end_at FROM f
+       JOIN vitals_data.sleep_session s
+         ON s.user_id = $2 AND s.source = 'app' AND s.device_id = f.device_id AND s.start_at = f.start_at
+       WHERE s.end_at IS DISTINCT FROM f.end_at
+          OR (SELECT string_agg(format('%s|%s|%s', g.time, g.stage, g.duration_s), ',' ORDER BY g.time)
+                FROM vitals_data.sleep_stage g WHERE g.user_id = $2 AND g.session_id = s.id)
+             IS DISTINCT FROM
+             (SELECT string_agg(format('%s|%s|%s', x.time, x.stage, x.duration_s), ',' ORDER BY x.time)
+                FROM jsonb_to_recordset(coalesce(f.stages, '[]')) AS x(time timestamptz, stage text, duration_s int))),
+     ended AS (
+       UPDATE vitals_data.sleep_session s SET end_at = c.end_at FROM changed c
+       WHERE s.id = c.id AND s.end_at IS DISTINCT FROM c.end_at)
+     SELECT id FROM changed";
+
+/// Session ids bound as a constant: TimescaleDB then decompresses only those sessions' batches, where a join on
+/// `changed` would decompress every compressed stage batch of the user (#123).
+const DELETE_STAGES: &str = "DELETE FROM vitals_data.sleep_stage WHERE user_id = $2 AND session_id = ANY($1)";
 
 pub enum StoreError {
     /// Index of the first frame whose `device_id` isn't one of the user's devices.
@@ -444,11 +473,37 @@ pub async fn store(db: &Db, user: &str, frames: &[Frame]) -> Result<u64, StoreEr
     }
     let mut inserted = 0;
     for (kind, sqls) in INSERTS {
-        let rows: Vec<&Frame> = frames.iter().filter(|f| f.kind() == kind).collect();
+        let mut rows: Vec<&Frame> = frames.iter().filter(|f| f.kind() == kind).collect();
         if rows.is_empty() {
             continue;
         }
+        if kind == "sleep" {
+            // Two versions of one night in a batch: the last one sent wins, as it would across batches (#90).
+            let mut seen = HashSet::new();
+            rows.reverse();
+            rows.retain(|f| match f {
+                Frame::Sleep {
+                    device_id, start_at, ..
+                } => seen.insert((*device_id, *start_at)),
+                _ => true,
+            });
+            rows.reverse();
+        }
         for (i, sql) in sqls.iter().enumerate() {
+            if kind == "sleep" && i == 1 {
+                let changed: Vec<Uuid> = sqlx::query_scalar(CHANGED_NIGHTS)
+                    .bind(sqlx::types::Json(&rows))
+                    .bind(user)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                if !changed.is_empty() {
+                    sqlx::query(DELETE_STAGES)
+                        .bind(&changed)
+                        .bind(user)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
             let n = sqlx::query(*sql)
                 .bind(sqlx::types::Json(&rows))
                 .bind(user)

@@ -1187,6 +1187,97 @@ async fn compress_day(owner: &PgPool, tables: &[&str], day: &str) {
     }
 }
 
+/// #90: a re-sent night that changed replaces the stored one; an identical resend rewrites nothing.
+#[tokio::test]
+async fn resent_night_replaces_the_stored_one_when_it_changed() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, db, owner) = setup().await;
+    let a = uid("alice");
+    let d = register(&db, &a, "Polar Loop", "R").await;
+    let night = |end: &str, stages: Value| json!({"type": "sleep", "device_id": d, "start_at": "2026-10-02T23:00:00Z", "end_at": end, "stages": stages});
+    let post = |f: &Value| post_ingest(&db, &a, "application/x-ndjson", None, f.to_string().into_bytes());
+    // The issue's case: a 3 h night with 2 stages, then the finished 8 h night with 3 other stages.
+    let early = night(
+        "2026-10-03T02:00:00Z",
+        json!([{"time": "2026-10-02T23:00:00Z", "stage": "light", "duration_s": 3600},
+               {"time": "2026-10-03T00:00:00Z", "stage": "deep", "duration_s": 7200}]),
+    );
+    let done = night(
+        "2026-10-03T07:00:00Z",
+        json!([{"time": "2026-10-02T23:00:00Z", "stage": "deep", "duration_s": 9000},
+               {"time": "2026-10-03T01:30:00Z", "stage": "rem", "duration_s": 5400},
+               {"time": "2026-10-03T03:00:00Z", "stage": "light", "duration_s": 14400}]),
+    );
+    assert_eq!(post(&early).await, (200, json!({"frames": 1, "inserted": 1})));
+    assert_eq!(post(&done).await, (200, json!({"frames": 1, "inserted": 0})));
+    let nights: Value = serde_json::from_str(
+        &v.sleep_list(
+            p(json!({"from": "2026-10-02T00:00:00Z", "to": "2026-10-04T00:00:00Z"})),
+            as_user(&a),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    // A plain array, or `{"sessions"}` once sleep_list is capped (#89): either way, the first night.
+    let n = if nights.is_array() {
+        &nights[0]
+    } else {
+        &nights["sessions"][0]
+    };
+    assert_eq!(n["hours"], 8.0, "{nights}");
+    assert_eq!(
+        n["stage_seconds"],
+        json!({"deep": 9000, "rem": 5400, "light": 14400}),
+        "{nights}"
+    );
+
+    // An identical resend is a no-op: the session row isn't even rewritten.
+    let version = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT xmin::text FROM vitals_data.sleep_session WHERE user_id = $1 AND start_at = '2026-10-02T23:00:00Z'",
+        )
+        .bind(&a)
+        .fetch_one(&owner)
+        .await
+        .unwrap()
+    };
+    let before = version().await;
+    assert_eq!(post(&done).await, (200, json!({"frames": 1, "inserted": 0})));
+    assert_eq!(version().await, before);
+
+    // Both versions in one batch (an outbox flushed at once): the later one wins, nothing is merged.
+    let b = uid("bob");
+    let (mut early, mut done) = (early, done);
+    early["device_id"] = json!(register(&db, &b, "Polar Loop", "R2").await);
+    done["device_id"] = early["device_id"].clone();
+    let body = format!("{early}\n{done}\n");
+    assert_eq!(
+        post_ingest(&db, &b, "application/x-ndjson", None, body.into_bytes()).await,
+        (200, json!({"frames": 2, "inserted": 1}))
+    );
+    let nights: Value = serde_json::from_str(
+        &v.sleep_list(
+            p(json!({"from": "2026-10-02T00:00:00Z", "to": "2026-10-04T00:00:00Z"})),
+            as_user(&b),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let n = if nights.is_array() {
+        &nights[0]
+    } else {
+        &nights["sessions"][0]
+    };
+    assert_eq!(n["hours"], 8.0, "{nights}");
+    assert_eq!(
+        n["stage_seconds"],
+        json!({"deep": 9000, "rem": 5400, "light": 14400}),
+        "{nights}"
+    );
+}
+
 #[tokio::test]
 async fn edits_and_resends_work_on_compressed_chunks() {
     let _serial = SLEEP_WRITES.lock().await;
@@ -1243,6 +1334,39 @@ async fn edits_and_resends_work_on_compressed_chunks() {
 
     // Resends still deduplicate, new frames still land.
     assert_eq!(post(batch).await, (200, json!({"frames": 5, "inserted": 0})));
+    // ...without decompressing the stored stages (#123): no rows left outside the compressed batches.
+    let chunk: String = sqlx::query_scalar(
+        "SELECT format('%I.%I', chunk_schema, chunk_name) FROM timescaledb_information.chunks
+          WHERE hypertable_schema = 'vitals_data' AND hypertable_name = 'sleep_stage'
+            AND range_start <= '2026-09-27'::timestamptz AND range_end > '2026-09-27'::timestamptz",
+    )
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+    let loose: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM ONLY {chunk}")))
+        .fetch_one(&owner)
+        .await
+        .unwrap();
+    assert_eq!(loose, 0, "{chunk}");
+    // A re-sent night that changed replaces the stored one, also on a compressed chunk (#90).
+    let changed = json!({"type": "sleep", "device_id": d, "start_at": "2026-09-26T23:00:00Z", "end_at": "2026-09-27T07:30:00Z",
+                         "stages": [{"time": "2026-09-26T23:00:00Z", "stage": "deep", "duration_s": 900}]});
+    assert_eq!(
+        post(changed.to_string()).await,
+        (200, json!({"frames": 1, "inserted": 0}))
+    );
+    let night = sql(
+        &v,
+        &a,
+        "SELECT s.end_at, json_agg(g.stage) AS stages FROM sleep_session s JOIN sleep_stage g ON g.session_id = s.id
+          WHERE s.start_at = '2026-09-26T23:00:00Z' GROUP BY s.end_at",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        night["rows"],
+        json!([{"end_at": "2026-09-27T07:30:00+00:00", "stages": ["deep"]}])
+    );
     let new = json!({"type": "hr", "device_id": d, "time": "2026-09-27T08:00:01Z", "bpm": 62}).to_string();
     assert_eq!(post(new).await, (200, json!({"frames": 1, "inserted": 1})));
     // A manual row (NULL device_id, a segmentby column) is still unique once compressed.
@@ -1282,7 +1406,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     .unwrap();
     assert_eq!(
         rows["rows"][0],
-        json!({"bpm": [60, 62, 70], "hrv": 0, "stages": ["light600", "rem300"]})
+        json!({"bpm": [60, 62, 70], "hrv": 0, "stages": ["deep900", "rem300"]})
     );
 
     // sleep_delete cascades into the compressed stages.
