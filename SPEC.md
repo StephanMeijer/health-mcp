@@ -1,13 +1,14 @@
-# vitals-mcp — v1 spec
+# health-mcp — v1 spec
 
-A remote MCP server, written in Rust, that stores and queries personal vitals in TimescaleDB.
+A remote MCP server, written in Rust, that stores and queries personal health data in TimescaleDB: vitals and a gym
+logbook (the former gym-mcp, see [Gym logbook](#gym-logbook)).
 It supports multiple users. Each user sees only their own data: the untrusted SQL tool through signed-user views that
 Postgres enforces, the typed tools and ingest through a `user_id` filter in every query (no row-level security).
 
 ## Scope
 
 **In scope:** heart rate, HRV, body measurements (weight, body fat, height, waist, hip, neck, scale composition, SpO2,
-temperature, glucose, blood pressure) and sleep.
+temperature, glucose, blood pressure) and sleep. The gym logbook: gyms, exercises, workouts, sets, settings and body notes.
 Manual logging and correction through MCP tools. Typed query tools and a read-only SQL tool.
 An ingest API for raw tracker frames (e.g. Polar H10 via the vitals-app Android app), with a per-user device registry.
 Auth with OAuth 2.1 as a resource server. A Dockerfile.
@@ -26,11 +27,11 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
 
 ## Auth
 
-- vitals-mcp is a **resource server only**. It never issues tokens.
+- health-mcp is a **resource server only**. It never issues tokens.
 - It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [<issuer>]`, the exact issuer
   named in `OIDC_ISSUER`'s discovery document (it may differ from `OIDC_ISSUER` by a trailing slash).
   It also advertises `scopes_supported: [openid, offline_access]`, so clients such as claude.ai request only those
-  instead of every scope the IdP lists. Every Authelia client for vitals-mcp must allow at least these two scopes.
+  instead of every scope the IdP lists. Every Authelia client for health-mcp must allow at least these two scopes.
 - `/mcp` without a valid bearer token returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - Token checks: signature (JWKS), `iss`, `aud` (= the resource, `PUBLIC_URL` + `/mcp`), `exp`, `nbf`. `user_id` = the token's `sub`.
 - The metadata is also served at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path insertion).
@@ -52,7 +53,7 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
   identity_providers:
     oidc:
       clients:
-        - client_id: 'claude-vitals'
+        - client_id: 'claude-health'
           client_secret: '$pbkdf2-sha512$…'
           redirect_uris: ['https://claude.ai/api/mcp/auth_callback']
           scopes: ['openid', 'offline_access']
@@ -60,19 +61,17 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
           response_types: ['code']
           require_pkce: true
           pkce_challenge_method: 'S256'
-          audience: ['https://vitals.example.com/mcp']    # = PUBLIC_URL + /mcp
+          audience: ['https://health.example.com/mcp']    # = PUBLIC_URL + /mcp
           access_token_signed_response_alg: 'RS256'
   ```
 
 ## Schema
 
-All times are `timestamptz`. Units are fixed in column names, except in `measurement`, whose `unit` column is pinned per type by
-`measurement_type`. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
+All times are `timestamptz`. Units are fixed in column names. `source` is the enum `vitals.source`: `manual` (MCP write tools), `app` (the ingest API), `import` (importers; they
 describe what they read with a `devices` row, so new importers need no new enum value).
 Base tables live in schema `vitals_data`; importers write there. Every vitals table is a hypertable and carries `user_id text NOT NULL` and `source vitals.source NOT NULL`, plus a
-natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exceptions are
-`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`, and `measurement`, keyed
-`UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, type, time)`: target those with `ON CONFLICT`.
+natural key `UNIQUE (user_id, source, time)`, so importers can write idempotently with `ON CONFLICT`. The exception is
+`heart_rate`, keyed `UNIQUE NULLS NOT DISTINCT (user_id, source, device_id, time)`: target that with `ON CONFLICT`.
 
 ```sql
 heart_rate     (time, user_id, source, bpm smallint NOT NULL, note text, rr_ms smallint[], device_id int → devices,
@@ -235,12 +234,13 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
           public: true
           token_endpoint_auth_method: 'none'
           redirect_uris: ['com.stephanmeijer.vitals:/oauth/callback']   # must match the app's redirect scheme
+          # gym-android: the same with client_id 'gym-android' and 'com.stephanmeijer.gym:/oauth/callback'
           scopes: ['openid', 'offline_access']
           grant_types: ['authorization_code', 'refresh_token']
           response_types: ['code']
           require_pkce: true
           pkce_challenge_method: 'S256'
-          audience: ['https://vitals.example.com/api']    # = PUBLIC_URL + /api
+          audience: ['https://health.example.com/api']    # = PUBLIC_URL + /api
           access_token_signed_response_alg: 'RS256'
           consent_mode: 'pre-configured'
           lifespan: 'vitals-device'   # define under identity_providers.oidc.lifespans.custom with a long refresh_token
@@ -317,13 +317,33 @@ The app calls the same tools as MCP clients, with the same arguments and results
 - The output of a tool has no schema beyond the description above; renaming a tool or an argument breaks the app as
   well as MCP clients.
 
+## Gym logbook
+
+The gym tools (`settings_*`, `gym_*`, `exercise_*`, `workout_*`, `set_*`, `body_note_*`, `training_overview`,
+`muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives`) come from
+gym-mcp unchanged, apart from its `measurement_*` tools, which are dropped (body fat and blood pressure are readings).
+Code: `src/gym/`. Usage rules for the model are in the server instructions (`src/gym/tools.rs`, `INSTRUCTIONS`).
+
+- **Schema:** plain tables in schema `gym` (migration 0009, gym-mcp's schema after its migration 0019):
+  `user_settings, gym, exercise, workout, workout_set, body_note`. Rows are keyed by `owner_sub`, the token's `sub`
+  (the same value as `user_id` elsewhere); `workout_set` belongs to its workout's owner.
+- **Access:** as `vitals_app`, with `search_path = gym, public` set per transaction (`src/gym/db.rs`), and like the
+  vitals tools every query filters on `owner_sub` itself. Each transaction also sets the session `TimeZone` to the
+  user's timezone, so local times, "today", weeks and months follow it. Read tools run in a `READ ONLY` transaction.
+- **SQL:** migration 0010 adds `vitals.user_settings, gym, exercise, workout, workout_set, body_note` views for
+  `vitals_reader`, filtered like the others (`workout_set` through a join on its workout); `vitals_reader` has no grant
+  on schema `gym`. Tested in `sql_query_sees_only_the_callers_gym_rows`.
+- **Sorting:** names, machines and variants sort with `COLLATE "und-x-icu"`. The TimescaleDB image is musl-based, and its
+  `en_US.utf8` collation sorts bytewise ("Technogym" before "matrix").
+
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
 `OIDC_ISSUER` (a trailing slash is fine; tokens are checked against the issuer its discovery document names),
-`PUBLIC_URL` (an origin without a path, e.g. `https://vitals.example.com`; this sets the resource/audience and the allowed `Host`;
+`PUBLIC_URL` (an origin without a path, e.g. `https://health.example.com`; this sets the resource/audience and the allowed `Host`;
 the server refuses to start with a path),
-`BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`.
+`BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`, and for the gym tools `DEFAULT_TIMEZONE` (default `Europe/Amsterdam`)
+and `WORKOUT_STALE_AFTER` (default `3h`, at most `8760h`).
 Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`
 (liveness: always `200` while the process runs), `/readyz` (readiness: `200` when both database pools reach the database
 within 2 s, else `503`; a pool whose connections are all busy counts as reachable, one check runs at a time per process,

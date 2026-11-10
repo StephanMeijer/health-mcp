@@ -1,27 +1,71 @@
-# vitals-mcp
+# health-mcp
 
-A remote MCP server that stores and queries personal vitals (heart rate, HRV, body measurements such as weight, waist and blood pressure, and sleep) in TimescaleDB.
-It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and offers typed tools plus a read-only SQL tool.
-Raw tracker data (e.g. a Polar H10 chest strap) arrives through an ingest API (`POST /api/v1/ingest`),
-from devices the app registers per user (`/api/v1/devices`).
-Design and security model: [SPEC.md](SPEC.md).
+A remote MCP server for personal health, in TimescaleDB. It merges the former gym-mcp and vitals-mcp:
+
+- **Gym logbook:** you say *"I arrived at the NDSM Trainmore"*, send a photo plus *"12 on 13kg"*, and it logs the workout. Ask *"what should I do next?"* and it recommends from your history and what that gym has.
+- **Vitals:** heart rate, HRV, body measurements (weight, body fat, waist, blood pressure, glucose, …) and sleep, logged by hand or by trackers. Raw tracker data (e.g. a Polar H10 chest strap) arrives through an ingest API (`POST /api/v1/ingest`) from devices the app registers per user (`/api/v1/devices`).
+- **One read-only SQL tool over both,** so a question like "training volume vs HRV" is one query.
+
+It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and keys all data by the token's `sub`.
+Rust (rmcp, axum, sqlx). Design and security model: [SPEC.md](SPEC.md).
+
+## Model
+
+**Gym** (schema `gym`, plain tables):
+
+| | |
+|---|---|
+| **Gym** | name + aliases, `equipment` (free text: "2 leg presses (max 300 kg), dumbbells 2–40 kg, no sled") and notes |
+| **Exercise** | `kind` (strength or cardio), primary and secondary muscle groups from a fixed list (`back`, `shoulders`, `legs`, `arms` work as filters), `equipment` it needs (free text; empty = bodyweight) and a description |
+| **Workout** | one visit to one gym; at most one open at a time |
+| **Set** | reps / weight / duration; `set_type` (`working` by default, or `warmup`, `partial`, `interrupted`: only working sets count towards volume, progress, records and the last session); the `machine` (brand) and grip or `variant`, both defaulting to the last one used for that exercise at that gym; `unilateral` with an optional `load_basis`; optional `rpe` and `rest_s`; for cardio, distance, intensity and what the screen shows (heart rate, calories, incline, speed); `performed_at` is separate from `logged_at`, and `time_estimated` marks a guessed time |
+| **Settings** | timezone, training `goal`, free-text `goals_notes`, `priority_muscle_groups` and `limitations` |
+| **Body note** | a dated ache, pain or fatigue: `location`, optional `severity` 1–10, notes and the workout it came up in |
+
+**Vitals** (schema `vitals_data`, TimescaleDB hypertables): `heart_rate`, `hrv`, `measurement` (one value per row; body fat and blood pressure live here), `sleep_session`/`sleep_stage`, and raw tracker tables (`ecg`, `acc`, …). See SPEC.md, Schema.
+
+**Gym time.** Each gym request runs with the Postgres session `TimeZone` set to the user's timezone (`settings_update`, default `DEFAULT_TIMEZONE`): local input like `2026-11-02 19:40` is read in that timezone, "today", ISO weeks and calendar months are local, and output is RFC 3339 with the local offset. The vitals tools take an explicit `tz` (default UTC) where they bucket by day.
+
+**Workout lifecycle.** `workout_start` at the gym that already has the open workout resumes it; at a different gym it is refused unless you pass `finish_open: true`. A workout whose last activity is older than `WORKOUT_STALE_AFTER` is closed by the next workout action: at its last set, or deleted if it has no sets, notes or body notes. Past sessions: `workout_add_past`, then `set_add` with a `workout_id`.
+
+## Tools
+
+| Group | Tools |
+|---|---|
+| Gym setup | `settings_get/update`, `gym_create/update/get/list`, `exercise_create/update/search` |
+| Workout | `workout_start/finish/update/current/add_past`, `workout_list`, `set_add/update/delete`, `body_note_add/list/update/delete` |
+| Gym analysis | `training_overview`, `muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
+| Vitals | `reading_add/update/delete/list/aggregate`, `sleep_add/update/delete/list`, `summary` |
+| SQL | `schema_describe`, `sql_query` (read-only, through per-user views over both gym and vitals data) |
+
+Wherever a gym tool takes a gym or exercise, you can give an id or a name, in any word order and with typos tolerated. An ambiguous or unknown name returns the candidates, so the model asks instead of guessing.
+
+The same tools are served to apps as plain JSON: `GET /api/v1/tools`, `POST /api/v1/tools/{name}` (see SPEC.md, Ingest API → Tools).
 
 ## Run
 
 ```sh
-docker build -t vitals-mcp .
+docker build -t health-mcp .
 docker run -p 8080:8080 \
-  -e PUBLIC_URL=https://vitals.example.com \
+  -e PUBLIC_URL=https://health.example.com \
   -e OIDC_ISSUER=https://auth.example.com \
-  -e DATABASE_OWNER_URL=postgres://owner:…@db/vitals \
-  -e DATABASE_URL=postgres://vitals_app:…@db/vitals \
-  -e DATABASE_READER_URL=postgres://vitals_reader:…@db/vitals \
-  vitals-mcp
+  -e DATABASE_OWNER_URL=postgres://owner:…@db/health \
+  -e DATABASE_URL=postgres://vitals_app:…@db/health \
+  -e DATABASE_READER_URL=postgres://vitals_reader:…@db/health \
+  health-mcp
 ```
 
-`PUBLIC_URL` must be an origin without a path; the server refuses to start otherwise.
+| Env | |
+|---|---|
+| `PUBLIC_URL` | required; an origin without a path (the server refuses to start otherwise). MCP tokens need `aud` = `PUBLIC_URL/mcp`, app tokens `PUBLIC_URL/api` |
+| `OIDC_ISSUER` | required; your Authelia URL |
+| `DATABASE_URL` / `DATABASE_READER_URL` | required; as `vitals_app` (typed tools, ingest) and `vitals_reader` (`sql_query`) |
+| `DATABASE_OWNER_URL` | runs the migrations on startup; leave unset to skip them |
+| `DEFAULT_TIMEZONE` | gym timezone for users who haven't set one; default `Europe/Amsterdam` |
+| `WORKOUT_STALE_AFTER` | default `3h` (`90m`, `45s` also work); at most `8760h` |
+| `BIND_ADDR` | default `0.0.0.0:8080` |
+
 Probes: `/healthz` for liveness, `/readyz` for readiness (it checks both database pools).
-On startup the server runs migrations as `DATABASE_OWNER_URL`. Leave that variable unset to skip them.
 The owner needs `CREATEROLE` the first time, or you create the roles yourself beforehand:
 
 ```sql
@@ -33,24 +77,41 @@ GRANT USAGE ON SCHEMA vitals_data TO vitals_importer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA vitals_data TO vitals_importer;
 ```
 
-Don't give `vitals_reader` any grant on `vitals_data`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
+Don't give `vitals_reader` any grant on `vitals_data` or `gym`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
 
 **Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
 (full snippet in SPEC.md). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
-For the vitals-app phone app, register a second, public client `vitals-android` (PKCE, `offline_access`,
-`audience: ['<PUBLIC_URL>/api']`, a long refresh-token lifespan; snippet in SPEC.md, Ingest API).
-In the app, enter only `<PUBLIC_URL>`; it uploads to `/api/v1/ingest` and discovers the rest.
+For the phone apps, register public clients (`vitals-android`, `gym-android`) with PKCE, `offline_access` and
+`audience: ['<PUBLIC_URL>/api']` (snippet in SPEC.md, Ingest API). In an app, enter only `<PUBLIC_URL>`; it discovers the rest.
+
+### Moving from gym-mcp
+
+Migration 0009 creates the gym tables (empty) in schema `gym`. Copy the data from the old gym database once:
+
+```sh
+pg_dump --data-only -t user_settings -t gym -t exercise -t workout -t workout_set -t body_note "$OLD_GYM_DB" \
+  | sed '/^\(COPY\|SELECT pg_catalog.setval\)/s/public\./gym./' \
+  | psql "$HEALTH_DB_OWNER"
+```
+
+pg_dump leaves out the generated search columns and resets the id sequences. gym-mcp's `measurement` table is not carried over.
 
 ## Develop
 
 ```sh
 docker compose up -d   # TimescaleDB on :55432 with dev roles
-cargo test             # unit tests + DB integration and isolation tests
+DATABASE_URL=postgres://postgres:postgres@localhost:55432/health cargo test
 ```
+
+`DATABASE_URL` is for the gym tests, which create a fresh database per test; the vitals tests use the dev database directly.
 
 ## Release
 
-Same flow as gym-mcp. Conventional commits on `main` make release-plz open a release PR (version bump and CHANGELOG).
+Conventional commits on `main` make release-plz open a release PR (version bump and CHANGELOG); versions continue from vitals-mcp's tags.
 Merging it tags `vX.Y.Z`, which builds a multi-arch image (amd64 and arm64, native runners) and pushes it to
-`ghcr.io/stephanmeijer/vitals-mcp` with build provenance. Actions are SHA-pinned in `.github/workflows/actions.lock`:
+`ghcr.io/stephanmeijer/health-mcp` with build provenance. Actions are SHA-pinned in `.github/workflows/actions.lock`:
 run `gh actions-lock` after changing any `uses:`.
+
+## License
+
+[MPL-2.0](LICENSE)
