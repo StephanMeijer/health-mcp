@@ -20,7 +20,7 @@ rmcp = { version = "3.8", features = ["server", "transport-streamable-http-serve
 schemars = { version = "1.2.3", features = ["uuid1"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "json", "migrate", "macros"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7.1", features = ["decompression-gzip", "decompression-zstd", "fs", "set-header", "timeout", "trace"] }
