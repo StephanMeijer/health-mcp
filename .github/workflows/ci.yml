@@ -38,7 +38,8 @@ jobs:
           persist-credentials: false
       # Service containers can't mount repo files, so the dev login roles are created here.
       - run: psql postgres://postgres:postgres@localhost:55432/health -v ON_ERROR_STOP=1 -f dev/init.sql
-      - uses: dtolnay/rust-toolchain@stable
+      # Installs the version and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo test --locked
         env:
@@ -52,9 +53,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # Installs the version and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo clippy --locked --all-targets -- -D warnings
 
@@ -65,9 +65,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # Installs the version and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
       - run: cargo fmt --check
 
   # Known vulnerabilities in the dependency tree; deny.toml lists the ones that don't reach us, and why.
@@ -107,7 +106,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      # Installs the version and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
       - name: Run release-plz (release)
         id: release-plz
         uses: release-plz/action@v0.5.148
@@ -151,7 +151,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      # Installs the version and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
       - name: Run release-plz (release-pr)
         uses: release-plz/action@v0.5.148
         with:

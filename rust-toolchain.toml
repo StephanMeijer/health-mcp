@@ -1,0 +1,7 @@
+# The single source of the Rust version for local builds, CI and the image build.
+# Keep the Dockerfile's rust:<version> tag at the same version to avoid downloading a second toolchain.
+# Dependabot proposes updates for this file and for the Dockerfile's base images.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
