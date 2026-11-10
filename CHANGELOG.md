@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/StephanMeijer/health-mcp/compare/v0.6.1...v0.7.0) - 2026-11-10
+
+### Added
+
+- *(share)* [**breaking**] share gym and vitals data with other users, read-only or read-write per domain
+
+### Fixed
+
+- *(api)* replace a stored night when the app re-sends it with changes
+- *(tools)* report server-side database faults in typed tools as internal errors, and log them
+- *(tools)* cap sleep_list at 1000 sessions and 1000 stage segments, and say when it was cut
+- *(api)* count sleep stages towards the per-batch row cap on ingest
+- *(docker)* run as numeric user 65532 so runAsNonRoot can verify it
+
+### Other
+
+- pin one Rust version for CI, local builds and the image, with Dependabot updates
+- *(db)* classify database errors in one place
+
 ## [0.6.1](https://github.com/StephanMeijer/health-mcp/compare/v0.6.0...v0.6.1) - 2026-11-10
 
 ### Fixed
