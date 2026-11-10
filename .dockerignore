@@ -1,2 +1,6 @@
 target
 .git
+# The web app is built inside the image from its lockfile.
+web/node_modules
+web/.svelte-kit
+web/build

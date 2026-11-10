@@ -1,5 +1,5 @@
 # Keeps the SHA-pinned actions (see .github/workflows/actions.lock), the Cargo dependencies, the Rust version
-# (rust-toolchain.toml) and the Dockerfile base images up to date. A Rust bump comes as two PRs (toolchain and
+# (rust-toolchain.toml), the Dockerfile base images and the web app's npm packages up to date. A Rust bump comes as two PRs (toolchain and
 # Dockerfile tag). rust-toolchain.toml picks the compiler everywhere, so merge them together only to keep the image
 # build from downloading a second toolchain.
 version: 2
@@ -35,3 +35,20 @@ updates:
       prefix: "chore(deps)"
     cooldown:
       default-days: 7
+    # Node majors follow the LTS line by hand (web/.nvmrc and package.json engines move with them).
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
+    # One PR for the routine bumps, so the web app doesn't drown the queue.
+    groups:
+      web:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

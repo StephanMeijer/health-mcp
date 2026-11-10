@@ -103,7 +103,13 @@ pub async fn db(login: Option<WebLogin>) -> Db {
 }
 
 pub fn app(db: &Db) -> axum::Router {
-    health_mcp::app(db.clone(), "health.example.com".into(), verifier(MCP), verifier(API))
+    health_mcp::app(
+        db.clone(),
+        "health.example.com".into(),
+        verifier(MCP),
+        verifier(API),
+        axum::Router::new(),
+    )
 }
 
 /// Calls `/api/v1/tools/{name}` as `who`; returns status and JSON body.
