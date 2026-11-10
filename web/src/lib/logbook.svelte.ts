@@ -1,3 +1,5 @@
+import { meUrl } from '#lib/server-routes.js';
+
 /** Whose logbook the web app shows: your own, or one someone shared with you (passed to tools as `owner`). */
 
 export type Access = 'none' | 'ro' | 'rw';
@@ -37,6 +39,17 @@ class Logbook {
 
 	canRead(domain: Domain): boolean {
 		return this.access(domain) !== 'none';
+	}
+
+	/** Refetches `me` after a share changed, so the logbook switcher follows; drops a logbook no longer shared. */
+	async refreshMe(): Promise<void> {
+		const res = await fetch(meUrl, { credentials: 'same-origin' });
+		// shortcut: a failed refetch keeps the old list until the next navigation reloads `me`.
+		if (!res.ok) return;
+		const me = (await res.json()) as Me;
+		this.me = me;
+		if (this.owner !== null && !me.shared_with_you.some((s) => s.owner === this.owner))
+			this.owner = null;
 	}
 }
 
