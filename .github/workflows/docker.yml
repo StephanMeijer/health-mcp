@@ -24,7 +24,7 @@ on:
         default: ""
 
 env:
-  IMAGE: ghcr.io/stephanmeijer/vitals-mcp
+  IMAGE: ghcr.io/stephanmeijer/health-mcp
 
 jobs:
   build:
@@ -118,9 +118,9 @@ jobs:
             type=semver,pattern={{major}},value=${{ inputs.tag_name }},enable=${{ !startsWith(inputs.tag_name, 'v0.') }}
             type=raw,value=latest,enable=${{ !contains(inputs.tag_name, '-') }}
           labels: |
-            org.opencontainers.image.title=vitals-mcp
-            org.opencontainers.image.description=MCP server for personal vitals in TimescaleDB
-            org.opencontainers.image.source=https://github.com/StephanMeijer/vitals-mcp
+            org.opencontainers.image.title=health-mcp
+            org.opencontainers.image.description=MCP server for personal health: gym logbook and vitals in TimescaleDB
+            org.opencontainers.image.source=https://github.com/StephanMeijer/health-mcp
             org.opencontainers.image.licenses=MPL-2.0
       - name: Create manifest list
         working-directory: /tmp/digests

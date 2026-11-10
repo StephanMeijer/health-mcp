@@ -1,10 +1,10 @@
 [package]
-name = "vitals-mcp"
+name = "health-mcp"
 version = "0.5.1"
 edition = "2024"
 license = "MPL-2.0"
-description = "MCP server for personal vitals in TimescaleDB"
-repository = "https://github.com/StephanMeijer/vitals-mcp"
+description = "MCP server for personal health: gym logbook and vitals in TimescaleDB"
+repository = "https://github.com/StephanMeijer/health-mcp"
 publish = false
 
 [dependencies]

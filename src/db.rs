@@ -27,9 +27,37 @@ pub struct Db {
     pub app: PgPool,
     /// `vitals_reader`: the SQL tool, read-only views in schema `vitals`.
     pub reader: PgPool,
+    pub gym: GymConfig,
+}
+
+/// Settings of the gym tools (`DEFAULT_TIMEZONE`, `WORKOUT_STALE_AFTER`).
+#[derive(Clone, Debug)]
+pub struct GymConfig {
+    /// Timezone of users who haven't set one.
+    pub default_timezone: String,
+    /// A workout with no activity for this long is closed by the next workout action.
+    pub stale_after: std::time::Duration,
+}
+
+impl Default for GymConfig {
+    fn default() -> Self {
+        Self {
+            default_timezone: "Europe/Amsterdam".into(),
+            stale_after: std::time::Duration::from_secs(3 * 3600),
+        }
+    }
 }
 
 impl Db {
+    /// The gym tools' view of this database: the app pool (role `vitals_app`) plus their settings.
+    pub fn gym_app(&self) -> crate::gym::db::App {
+        crate::gym::db::App {
+            pool: self.app.clone(),
+            default_timezone: self.gym.default_timezone.clone(),
+            stale_after: self.gym.stale_after,
+        }
+    }
+
     /// Readiness: both pools reach the database within 2 s. Checks reachability, not free capacity: an idle
     /// connection runs `SELECT 1`; when every connection is busy, those open connections count as reachable; only an
     /// empty pool connects.

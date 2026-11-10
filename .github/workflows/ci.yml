@@ -28,7 +28,7 @@ jobs:
         image: timescale/timescaledb:2.31.0-pg17
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: vitals
+          POSTGRES_DB: health
         ports: ["55432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
@@ -37,10 +37,13 @@ jobs:
         with:
           persist-credentials: false
       # Service containers can't mount repo files, so the dev login roles are created here.
-      - run: psql postgres://postgres:postgres@localhost:55432/vitals -v ON_ERROR_STOP=1 -f dev/init.sql
+      - run: psql postgres://postgres:postgres@localhost:55432/health -v ON_ERROR_STOP=1 -f dev/init.sql
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo test --locked
+        env:
+          # The gym tests create a fresh database per test; the vitals tests use the URLs in tests/db.rs.
+          DATABASE_URL: postgres://postgres:postgres@localhost:55432/health
 
   clippy:
     # Fork PRs run untrusted build.rs / proc macros / rust-toolchain.toml: keep them off self-hosted runners.
@@ -93,7 +96,7 @@ jobs:
   release-plz-release:
     name: Tag and release
     needs: [test, clippy, fmt, audit, docker-build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/vitals-mcp'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/health-mcp'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -134,7 +137,7 @@ jobs:
     needs: [release-plz-release]
     if: >-
       !cancelled()
-      && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/vitals-mcp'
+      && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/health-mcp'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
     runs-on: ubuntu-latest
     permissions:

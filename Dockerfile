@@ -5,10 +5,10 @@ COPY . .
 # Migrations are embedded at compile time (sqlx::migrate!), so no DB is needed to build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked && cp target/release/vitals-mcp /vitals-mcp
+    cargo build --release --locked && cp target/release/health-mcp /health-mcp
 
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=build /vitals-mcp /vitals-mcp
+COPY --from=build /health-mcp /health-mcp
 EXPOSE 8080
 USER nonroot
-ENTRYPOINT ["/vitals-mcp"]
+ENTRYPOINT ["/health-mcp"]

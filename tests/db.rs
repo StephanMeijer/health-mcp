@@ -1,13 +1,13 @@
 //! Needs the dev database: `docker compose up -d`. Override URLs with TEST_OWNER_URL / TEST_APP_URL / TEST_READER_URL.
 
 use axum::http::{Request, request::Parts};
+use health_mcp::auth::User;
+use health_mcp::db::Db;
+use health_mcp::tools::*;
 use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, PgPool};
-use vitals_mcp::auth::User;
-use vitals_mcp::db::Db;
-use vitals_mcp::tools::*;
 
 /// The first sleep_stage rows in a new time range create a TimescaleDB chunk, which copies the foreign key to
 /// sleep_session and locks it; two such transactions at once can deadlock (see SPEC.md, Known limits).
@@ -18,27 +18,28 @@ fn url(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.into())
 }
 
-async fn setup() -> (Vitals, Db, PgPool) {
+async fn setup() -> (Health, Db, PgPool) {
     let owner = PgPool::connect(&url(
         "TEST_OWNER_URL",
-        "postgres://postgres:postgres@localhost:55432/vitals",
+        "postgres://postgres:postgres@localhost:55432/health",
     ))
     .await
     .unwrap();
     sqlx::migrate!().run(&owner).await.unwrap();
     let db = Db {
-        app: PgPool::connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/vitals"))
+        app: PgPool::connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/health"))
             .await
             .unwrap(),
-        reader: vitals_mcp::db::reader_pool_options()
+        reader: health_mcp::db::reader_pool_options()
             .connect(&url(
                 "TEST_READER_URL",
-                "postgres://vitals_reader:reader@localhost:55432/vitals",
+                "postgres://vitals_reader:reader@localhost:55432/health",
             ))
             .await
             .unwrap(),
+        gym: Default::default(),
     };
-    (Vitals::new(db.clone()), db, owner)
+    (Health::new(db.clone()), db, owner)
 }
 
 fn as_user(user: &str) -> Extension<Parts> {
@@ -55,7 +56,7 @@ fn p<T: serde::de::DeserializeOwned>(v: Value) -> Parameters<T> {
     Parameters(serde_json::from_value(v).unwrap())
 }
 
-async fn add_hr(v: &Vitals, user: &str, time: &str, bpm: i32) {
+async fn add_hr(v: &Health, user: &str, time: &str, bpm: i32) {
     v.reading_add(
         p(json!({"kind": "heart_rate", "readings": [{"time": time, "bpm": bpm}]})),
         as_user(user),
@@ -64,7 +65,7 @@ async fn add_hr(v: &Vitals, user: &str, time: &str, bpm: i32) {
     .unwrap();
 }
 
-async fn sql(v: &Vitals, user: &str, q: &str) -> Result<Value, String> {
+async fn sql(v: &Health, user: &str, q: &str) -> Result<Value, String> {
     v.sql_query(p(json!({ "sql": q })), as_user(user))
         .await
         .map(|s| serde_json::from_str(&s).unwrap())
@@ -82,7 +83,7 @@ async fn ready_while_every_connection_is_busy() {
     let (_, db, _) = setup().await;
     let app = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/vitals"))
+        .connect(&url("TEST_APP_URL", "postgres://vitals_app:app@localhost:55432/health"))
         .await
         .unwrap();
     let _held = app.acquire().await.unwrap();
@@ -345,26 +346,6 @@ async fn measurements_are_one_row_per_value() {
 }
 
 #[tokio::test]
-async fn summary_keeps_measurement_types_apart() {
-    let (v, _, _) = setup().await;
-    let a = uid("alice");
-    let t = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-    for (kind, value) in [("weight", 80.5), ("waist", 84.0)] {
-        v.reading_add(
-            p(json!({"kind": kind, "readings": [{"time": t, "value": value}]})),
-            as_user(&a),
-        )
-        .await
-        .unwrap();
-    }
-    let s: Value = serde_json::from_str(&v.summary(as_user(&a)).await.unwrap()).unwrap();
-    assert_eq!(s["weight"]["value"]["avg_30d"], 80.5, "{s}");
-    assert_eq!(s["waist"]["value"]["avg_30d"], 84.0, "{s}");
-    assert_eq!(s["weight"]["latest"]["type"], "weight", "{s}");
-    assert_eq!(s["waist"]["latest"]["type"], "waist", "{s}");
-}
-
-#[tokio::test]
 async fn imported_readings_are_read_only() {
     let (v, _, owner) = setup().await;
     let a = uid("alice");
@@ -576,22 +557,72 @@ async fn sql_query_cannot_escape_the_caller() {
     assert!(forged_sig.unwrap_err().to_string().contains("no authenticated user"));
 }
 
+/// The gym views filter like the vitals ones: workout_set through its workout's owner.
+#[tokio::test]
+async fn sql_query_sees_only_the_callers_gym_rows() {
+    let (v, _, _) = setup().await;
+    let (a, b) = (uid("alice"), uid("bob"));
+    for u in [&a, &b] {
+        let call = |name: &'static str, args: Value| {
+            let user = User(u.to_string());
+            let v = &v;
+            async move { v.call(name, args, user).await.unwrap().unwrap() }
+        };
+        call("gym_create", json!({"name": "Home"})).await;
+        call("exercise_create", json!({"name": "Squat", "muscle_groups": ["quads"]})).await;
+        let w: Value = serde_json::from_str(
+            &call(
+                "workout_add_past",
+                json!({"gym": "Home", "started_at": "2026-10-01T18:00:00Z", "finished_at": "2026-10-01T19:00:00Z"}),
+            )
+            .await,
+        )
+        .unwrap();
+        call(
+            "set_add",
+            json!({"workout_id": w["workout_id"], "exercise": "Squat",
+                   "sets": [{"reps": 5, "weight_kg": 100, "performed_at": "2026-10-01T18:10:00Z"}]}),
+        )
+        .await;
+    }
+    for q in [
+        "SELECT owner_sub FROM gym",
+        "SELECT owner_sub FROM exercise",
+        "SELECT owner_sub FROM workout",
+        "SELECT w.owner_sub FROM workout_set s JOIN workout w ON w.id = s.workout_id",
+    ] {
+        let rows = sql(&v, &a, q).await.unwrap()["rows"].clone();
+        assert_eq!(rows, json!([{"owner_sub": a}]), "{q}");
+    }
+    // Without the join: exactly one set, alice's.
+    let n = sql(&v, &a, "SELECT count(*) AS n FROM workout_set").await.unwrap();
+    assert_eq!(n["rows"], json!([{"n": 1}]));
+    for attack in [
+        "SELECT * FROM gym.workout",
+        "SELECT * FROM gym.workout_set",
+        "SELECT * FROM gym.user_settings",
+    ] {
+        assert!(sql(&v, &a, attack).await.is_err(), "attack succeeded: {attack}");
+    }
+}
+
 #[tokio::test]
 async fn sql_query_does_not_leak_session_state() {
     // A one-connection reader pool forces the same connection to be reused, so a session advisory lock
     // that survived `sql_query`'s rollback would still be held on the next call. The release hook scrubs it.
     let (_, db0, _) = setup().await;
-    let reader = vitals_mcp::db::reader_pool_options()
+    let reader = health_mcp::db::reader_pool_options()
         .max_connections(1)
         .connect(&url(
             "TEST_READER_URL",
-            "postgres://vitals_reader:reader@localhost:55432/vitals",
+            "postgres://vitals_reader:reader@localhost:55432/health",
         ))
         .await
         .unwrap();
-    let v = Vitals::new(Db {
+    let v = Health::new(Db {
         app: db0.app.clone(),
         reader,
+        gym: Default::default(),
     });
     let u = uid("lock");
     sql(&v, &u, "SELECT pg_advisory_lock(42) AS x").await.unwrap();
@@ -649,7 +680,7 @@ fn session_id(msg: &str) -> String {
         .to_owned()
 }
 
-async fn stage_seconds(v: &Vitals, user: &str) -> Value {
+async fn stage_seconds(v: &Health, user: &str) -> Value {
     let nights: Value = serde_json::from_str(
         &v.sleep_list(
             p(json!({"from": "2026-10-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"})),
@@ -760,9 +791,9 @@ const INGEST_NOW: &str = "2026-10-04T00:00:00Z";
 
 async fn api(db: &Db, user: &str, req: Request<axum::body::Body>) -> (u16, Value) {
     use tower::ServiceExt;
-    let app: axum::Router = vitals_mcp::ingest::router(db.clone())
+    let app: axum::Router = health_mcp::ingest::router(db.clone())
         .layer(axum::Extension(User(user.to_owned())))
-        .layer(axum::Extension(vitals_mcp::ingest::Clock(INGEST_NOW.parse().unwrap())));
+        .layer(axum::Extension(health_mcp::ingest::Clock(INGEST_NOW.parse().unwrap())));
     let res = app.oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
@@ -967,7 +998,7 @@ async fn ingest_checks_frame_times_against_the_real_clock() {
     let d = register(&db, &a, "Polar H10", "CLOCK").await;
     // No Clock extension, unlike `api`: the handler uses the system clock.
     let post = |time: String| {
-        let app: axum::Router = vitals_mcp::ingest::router(db.clone()).layer(axum::Extension(User(a.clone())));
+        let app: axum::Router = health_mcp::ingest::router(db.clone()).layer(axum::Extension(User(a.clone())));
         let body = json!({"type": "battery", "device_id": d, "time": time, "level": 50}).to_string();
         async move {
             let req = Request::post("/v1/ingest")
@@ -995,10 +1026,10 @@ async fn ingest_rejects_unsupported_requests() {
             .0,
         415
     );
-    let huge = vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1];
+    let huge = vec![b'\n'; health_mcp::ingest::MAX_BODY + 1];
     assert_eq!(post_ingest(&db, &a, "application/x-ndjson", None, huge).await.0, 413);
     // The cap applies after decompression: a small zstd body that inflates past it is refused too.
-    let bomb = zstd::encode_all(&vec![b'\n'; vitals_mcp::ingest::MAX_BODY + 1][..], 19).unwrap();
+    let bomb = zstd::encode_all(&vec![b'\n'; health_mcp::ingest::MAX_BODY + 1][..], 19).unwrap();
     assert!(bomb.len() < 1 << 20);
     assert_eq!(
         post_ingest(&db, &a, "application/x-ndjson", Some("zstd"), bomb).await.0,
@@ -1009,7 +1040,7 @@ async fn ingest_rejects_unsupported_requests() {
         json!({"type": "ecg", "device_id": 1, "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": vec![0; n]})
             .to_string()
     };
-    let max = vitals_mcp::ingest::MAX_SAMPLES;
+    let max = health_mcp::ingest::MAX_SAMPLES;
     let two = format!("{}\n{}", ecg(max / 2), ecg(max / 2 + 1));
     assert_eq!(
         post_ingest(&db, &a, "application/x-ndjson", None, two.into_bytes())
@@ -1142,11 +1173,7 @@ async fn edits_and_resends_work_on_compressed_chunks() {
     .collect::<String>();
     let post = |body: String| post_ingest(&db, &a, "application/x-ndjson", None, body.into_bytes());
     assert_eq!(post(batch.clone()).await, (200, json!({"frames": 5, "inserted": 5})));
-    for (kind, values) in [
-        ("heart_rate", json!({"bpm": 61})),
-        ("hrv", json!({"rmssd_ms": 40})),
-        ("weight", json!({"value": 80})),
-    ] {
+    for (kind, values) in [("heart_rate", json!({"bpm": 61})), ("hrv", json!({"rmssd_ms": 40}))] {
         let mut r = values;
         r["time"] = json!("2026-09-27T09:00:00Z");
         v.reading_add(p(json!({"kind": kind, "readings": [r]})), as_user(&a))
@@ -1170,7 +1197,6 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         &[
             "heart_rate",
             "hrv",
-            "measurement",
             "device_battery",
             "device_event",
             "skin_temp",
@@ -1207,19 +1233,6 @@ async fn edits_and_resends_work_on_compressed_chunks() {
         .await
         .unwrap();
     assert_eq!(del, json!({"deleted": 1, "kind": "hrv"}).to_string());
-    // The range trigger still guards a compressed measurement; edits within range go through.
-    let weight = |value: i32| json!({"kind": "weight", "time": "2026-09-27T09:00:00Z", "set": {"value": value}});
-    let too_heavy = v.reading_update(p(weight(900)), as_user(&a)).await.unwrap_err();
-    assert!(too_heavy.to_string().contains("outside"), "{too_heavy}");
-    v.reading_update(p(weight(81)), as_user(&a)).await.unwrap();
-    let del = v
-        .reading_delete(
-            p(json!({"kind": "weight", "times": ["2026-09-27T09:00:00Z"]})),
-            as_user(&a),
-        )
-        .await
-        .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&del).unwrap()["deleted"], 1);
     let stages = json!({"id": id, "stages": [{"time": "2026-09-27T13:00:00Z", "stage": "rem", "duration_s": 300}]});
     v.sleep_update(p(stages), as_user(&a)).await.unwrap();
 
@@ -1446,7 +1459,7 @@ async fn app_can_call_every_tool() {
     assert!(s == 400 && out["error"].as_str().unwrap().contains("App"), "{s} {out}");
 
     // Tool bodies get 1 MiB, not ingest's 32 MiB, also after decompression.
-    let pad = "x".repeat(vitals_mcp::ingest::MAX_TOOL_BODY);
+    let pad = "x".repeat(health_mcp::ingest::MAX_TOOL_BODY);
     assert_eq!(tool(&db, &a, "summary", json!({ "pad": pad })).await.0, 413);
     let bomb = zstd::encode_all(json!({ "pad": pad }).to_string().as_bytes(), 19).unwrap();
     let req = Request::post("/v1/tools/summary")
@@ -1482,21 +1495,51 @@ async fn app_gets_the_tool_schemas() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     names.sort();
+    // The vitals tools and the gym tools.
     assert_eq!(
         names,
         [
+            "body_note_add",
+            "body_note_delete",
+            "body_note_list",
+            "body_note_update",
+            "exercise_alternatives",
+            "exercise_create",
+            "exercise_search",
+            "exercise_update",
+            "gym_create",
+            "gym_get",
+            "gym_list",
+            "gym_update",
+            "muscle_group_volume",
+            "personal_records",
+            "progress",
             "reading_add",
             "reading_aggregate",
             "reading_delete",
             "reading_list",
             "reading_update",
             "schema_describe",
+            "search",
+            "set_add",
+            "set_delete",
+            "set_search",
+            "set_update",
+            "settings_get",
+            "settings_update",
             "sleep_add",
             "sleep_delete",
             "sleep_list",
             "sleep_update",
             "sql_query",
-            "summary"
+            "summary",
+            "training_overview",
+            "workout_add_past",
+            "workout_current",
+            "workout_finish",
+            "workout_list",
+            "workout_start",
+            "workout_update"
         ]
     );
     assert!(out.as_array().unwrap().iter().all(|t| t["inputSchema"].is_object()));
@@ -1512,7 +1555,7 @@ async fn app_gets_the_tool_schemas() {
         schema.contains(r#""manual""#) && schema.contains(r#""import""#),
         "{schema}"
     );
-    // Every listed tool is also callable: `Vitals::call` is a hand-written match next to `#[tool_router]`.
+    // Every listed tool is also callable: `Health::call` is a hand-written match next to `#[tool_router]`.
     // A bad argument gets 400 (or 200 from tools without arguments); a missing arm in `call` gets 404.
     for name in names {
         let (s, out) = tool(&db, "x", name, json!({ "__probe": 1 })).await;

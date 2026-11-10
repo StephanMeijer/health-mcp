@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod db;
+pub mod gym;
 pub mod ingest;
 pub mod tools;
 
@@ -26,7 +27,7 @@ pub fn endpoints(public_url: &str) -> anyhow::Result<Endpoints> {
     let public_url = reqwest::Url::parse(public_url).context("PUBLIC_URL")?;
     anyhow::ensure!(
         public_url.path() == "/",
-        "PUBLIC_URL must be an origin without a path, e.g. https://vitals.example.com"
+        "PUBLIC_URL must be an origin without a path, e.g. https://health.example.com"
     );
     let host_str = public_url.host_str().context("PUBLIC_URL has no host")?;
     Ok(Endpoints {
@@ -76,7 +77,7 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
 
     // Stateless: any replica can serve any request, no sticky sessions needed in K8s.
     let mcp = StreamableHttpService::new(
-        move || Ok(tools::Vitals::new(db.clone())),
+        move || Ok(tools::Health::new(db.clone())),
         Arc::new(NeverSessionManager::default()),
         StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
@@ -211,8 +212,9 @@ mod tests {
         let db = db::Db {
             app: pool(),
             reader: pool(),
+            gym: Default::default(),
         };
-        let app = app(db, "vitals.example.com".into(), verifier(MCP), verifier(API));
+        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
         let res = app
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
             .await
@@ -222,8 +224,8 @@ mod tests {
 
     const SECRET: &str = "test-secret-at-least-32-bytes-long!!";
     const ISS: &str = "https://auth.example.com";
-    const MCP: &str = "https://vitals.example.com/mcp";
-    const API: &str = "https://vitals.example.com/api";
+    const MCP: &str = "https://health.example.com/mcp";
+    const API: &str = "https://health.example.com/api";
 
     fn verifier(aud: &str) -> Arc<auth::Verifier> {
         let mut k = Jwk::from_encoding_key(
@@ -260,8 +262,9 @@ mod tests {
         let db = db::Db {
             app: pool(),
             reader: pool(),
+            gym: Default::default(),
         };
-        let app = app(db, "vitals.example.com".into(), verifier(MCP), verifier(API));
+        let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
         // An unsupported Content-Type: past auth, /api answers 415 without touching the database.
         let mut req = Request::post(path).header(header::CONTENT_TYPE, "text/plain");
         if let Some(aud) = token {
@@ -276,23 +279,23 @@ mod tests {
     }
 
     const API_CHALLENGE: &str =
-        r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/api""#;
+        r#"Bearer resource_metadata="https://health.example.com/.well-known/oauth-protected-resource/api""#;
     const MCP_CHALLENGE: &str =
-        r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/mcp""#;
+        r#"Bearer resource_metadata="https://health.example.com/.well-known/oauth-protected-resource/mcp""#;
 
     #[test]
     fn endpoints_come_from_public_url() {
-        let e = endpoints("https://vitals.example.com").unwrap();
+        let e = endpoints("https://health.example.com").unwrap();
         assert_eq!(
             (e.resource.as_str(), e.api_resource.as_str(), e.host.as_str()),
-            (MCP, API, "vitals.example.com")
+            (MCP, API, "health.example.com")
         );
-        let e = endpoints("https://vitals.example.com:8443/").unwrap();
+        let e = endpoints("https://health.example.com:8443/").unwrap();
         assert_eq!(
             (e.resource.as_str(), e.host.as_str()),
-            ("https://vitals.example.com:8443/mcp", "vitals.example.com:8443")
+            ("https://health.example.com:8443/mcp", "health.example.com:8443")
         );
-        let err = endpoints("https://vitals.example.com/x").unwrap_err().to_string();
+        let err = endpoints("https://health.example.com/x").unwrap_err().to_string();
         assert!(err.contains("PUBLIC_URL"), "{err}");
     }
 

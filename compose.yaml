@@ -4,6 +4,6 @@ services:
     image: timescale/timescaledb:2.31.0-pg17
     environment:
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: vitals
+      POSTGRES_DB: health
     ports: ["127.0.0.1:55432:5432"]
     volumes: ["./dev/init.sql:/docker-entrypoint-initdb.d/zz-vitals.sql:ro"]

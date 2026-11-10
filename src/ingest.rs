@@ -15,7 +15,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::auth::User;
 use crate::db::Db;
-use crate::tools::{SleepStage, ToolError, Vitals};
+use crate::tools::{Health, SleepStage, ToolError};
 
 /// Applies to the decompressed body, so it also caps zip bombs.
 pub const MAX_BODY: usize = 32 << 20;
@@ -597,7 +597,7 @@ async fn register_device(
 }
 
 async fn list_tools() -> Response {
-    Json(Vitals::tool_list()).into_response()
+    Json(Health::tool_list()).into_response()
 }
 
 /// The JSON body is the tool's arguments (empty means `{}`); the result is the tool's output, as JSON.
@@ -615,7 +615,7 @@ async fn call_tool(
             Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
         }
     };
-    match Vitals::new(db).call(&name, args, user).await {
+    match Health::new(db).call(&name, args, user).await {
         None => StatusCode::NOT_FOUND.into_response(),
         // Tools return JSON text; `schema_describe` returns plain text, which becomes a JSON string.
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::auth::User;
 use crate::db::Db;
 
-type ToolResult = Result<String, ToolError>;
+pub type ToolResult = Result<String, ToolError>;
 
 /// Why a tool call failed. The text of every variant goes to the model; `/api` maps the variant to a status.
 #[derive(Debug, PartialEq)]
@@ -361,13 +361,15 @@ pub struct SqlQuery {
 }
 
 #[derive(Clone)]
-pub struct Vitals {
+pub struct Health {
     db: Db,
+    /// The gym tools' database handle (src/gym/tools.rs).
+    pub(crate) gym: crate::gym::db::App,
     #[allow(dead_code, reason = "used by the tool_handler macro")]
     tool_router: ToolRouter<Self>,
 }
 
-fn user(parts: &Parts) -> Result<&str, ToolError> {
+pub(crate) fn user(parts: &Parts) -> Result<&str, ToolError> {
     parts
         .extensions
         .get::<User>()
@@ -400,7 +402,7 @@ fn db_err(e: sqlx::Error) -> ToolError {
 /// (53100); and 57P01–57P03 (server shutting down or starting up, as in a restart or failover). Not the rest of 08
 /// and 53: a protocol violation (08P01), out of memory (53200) or a temp file limit (53400) fails the same way again.
 /// 57014 (sql_query's statement timeout) stays the caller's error.
-fn retryable(code: &str) -> bool {
+pub(crate) fn retryable(code: &str) -> bool {
     (code.starts_with("40") && code != "40002")
         || matches!(
             code,
@@ -430,11 +432,12 @@ async fn insert_stages(tx: &mut crate::db::Tx, user: &str, id: Uuid, stages: &[S
 }
 
 #[tool_router]
-impl Vitals {
+impl Health {
     pub fn new(db: Db) -> Self {
         Self {
+            gym: db.gym_app(),
             db,
-            tool_router: Self::tool_router(),
+            tool_router: Self::all_tools(),
         }
     }
 
@@ -835,14 +838,20 @@ impl Vitals {
 }
 
 /// The same tools for the app over `/api`: names, arguments and results exactly as over MCP.
-impl Vitals {
+impl Health {
     /// Every tool with its input JSON Schema, generated from the same structs as MCP's `tools/list`.
     pub fn tool_list() -> Vec<rmcp::model::Tool> {
-        Self::tool_router().list_all()
+        Self::all_tools().list_all()
+    }
+
+    /// The vitals tools plus the gym tools.
+    fn all_tools() -> ToolRouter<Self> {
+        Self::tool_router() + Self::gym_router()
     }
 
     /// Runs tool `name` with JSON `args` as `user`; `None` if there is no such tool.
     pub async fn call(&self, name: &str, args: Value, user: User) -> Option<ToolResult> {
+        let owner = user.0.clone();
         let mut parts = axum::http::Request::new(()).into_parts().0;
         parts.extensions.insert(user);
         let x = Extension(parts);
@@ -868,7 +877,11 @@ impl Vitals {
             "sql_query" => with_args!(sql_query),
             "summary" => self.summary(x).await,
             "schema_describe" => Ok(self.schema_describe().await),
-            _ => return None,
+            _ => {
+                return crate::gym::tools::call_api(&self.gym, &owner, name, args)
+                    .await
+                    .map(crate::gym::tools::out);
+            }
         })
     }
 }
@@ -912,6 +925,18 @@ recharge       (night date, user_id, source, device_id, status smallint, ans_cha
 ecg is ~7.8k rows per minute, acc ~12k: aggregate with time_bucket, never return raw samples for long periods.
 Compute HRV from heart_rate.rr_ms (drop intervals < 300 or > 2000 ms), not from bpm. Gaps mean the strap was off or out of range.
 
+Gym logbook (owner_sub = your user id; times in UTC unless you convert; use the gym tools for writes):
+user_settings  (owner_sub, timezone, goal, goals_notes, priority_muscle_groups text[], limitations)
+gym            (id, owner_sub, name, aliases text[], notes, equipment, created_at)
+exercise       (id, owner_sub, name, aliases text[], kind 'strength'|'cardio', muscle_groups text[], secondary_muscle_groups text[], equipment, description)
+workout        (id, owner_sub, gym_id → gym.id, started_at, finished_at, finish_reason, time_estimated, notes, created_at)  -- one gym visit
+workout_set    (id, workout_id → workout.id, exercise_id → exercise.id, performed_at, time_estimated,
+                set_type 'working'|'warmup'|'partial'|'interrupted', reps, weight_kg, unilateral, load_basis, machine, variant,
+                rpe, rest_s, duration_s, distance_m, intensity, avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct,
+                avg_speed_kmh, max_speed_kmh, notes, logged_at, updated_at)
+               -- only set_type 'working' counts as training volume; weight_kg is per dumbbell, barbell total, or machine stack
+body_note      (id, owner_sub, noted_at, location, severity 1..10, notes, workout_id)  -- aches, pain, fatigue
+
 source is 'manual' for readings logged through this server, 'app' for trackers sent by the phone app, 'import' for importers.
 device_id → devices.id says which tracker recorded a row; NULL means unknown (manual, imported, or older app heart_rate rows), not "manual".
 
@@ -933,6 +958,11 @@ JOIN sleep_stage g ON g.session_id = s.id AND g.stage = 'deep' GROUP BY 1 ORDER 
 -- HRV vs previous night's sleep duration
 SELECT h.time::date, h.rmssd_ms, extract(epoch FROM s.end_at - s.start_at) / 3600 AS sleep_h
 FROM hrv h JOIN sleep_session s ON s.end_at::date = h.time::date;
+-- working sets per week vs average HRV that week
+SELECT w.week, w.sets, round(h.rmssd::numeric, 1) AS avg_rmssd_ms FROM
+  (SELECT date_trunc('week', performed_at) AS week, count(*) AS sets FROM workout_set WHERE set_type = 'working' GROUP BY 1) w
+  LEFT JOIN (SELECT date_trunc('week', time) AS week, avg(rmssd_ms) AS rmssd FROM hrv GROUP BY 1) h USING (week)
+ORDER BY 1;
 -- nightly skin temperature (02:00-06:00 local) vs the previous 30 nights
 WITH n AS (SELECT (t.time AT TIME ZONE 'Europe/Amsterdam')::date AS night, avg(c) AS c FROM skin_temp t, unnest(t.celsius) c
   WHERE extract(hour FROM t.time AT TIME ZONE 'Europe/Amsterdam') BETWEEN 2 AND 5 GROUP BY 1)
@@ -940,16 +970,19 @@ SELECT night, round(c::numeric, 2), round((c - avg(c) OVER (ORDER BY night ROWS 
 FROM n ORDER BY night;"#;
 
 #[tool_handler]
-impl ServerHandler for Vitals {
+impl ServerHandler for Health {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).with_instructions(
-            "Personal vitals log: heart rate, HRV, body measurements (weight, body fat, height, waist, blood pressure, \
+            .with_server_info(Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).with_instructions(format!(
+            "{}\n\nVitals: personal log of heart rate, HRV, body measurements (weight, body fat, height, waist, blood pressure, \
              glucose, …) and sleep. \
              Use summary for an overview, reading_list/reading_aggregate/sleep_list for typed queries, and \
              schema_describe + sql_query for anything else. Write tools only change readings logged manually \
-             (source 'manual'); imported readings are read-only. Convert lb to kg, in to cm, °F to °C and mg/dL to mmol/L before logging.",
-        )
+             (source 'manual'); imported readings are read-only. Convert lb to kg, in to cm, °F to °C and mg/dL to mmol/L before logging. \
+             sql_query also sees the gym logbook (workouts, sets, exercises), so questions that span both \
+             (training load vs HRV or sleep) are one query.",
+            crate::gym::tools::INSTRUCTIONS
+        ))
     }
 }
 

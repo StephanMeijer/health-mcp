@@ -184,7 +184,7 @@ mod tests {
 
     const SECRET: &str = "test-secret-at-least-32-bytes-long!!";
     const ISS: &str = "https://auth.example.com";
-    const AUD: &str = "https://vitals.example.com/mcp";
+    const AUD: &str = "https://health.example.com/mcp";
 
     fn verifier() -> Verifier {
         let k = jsonwebtoken::jwk::Jwk::from_encoding_key(
@@ -400,7 +400,7 @@ mod tests {
     }
 
     const CHALLENGE: &str =
-        r#"Bearer resource_metadata="https://vitals.example.com/.well-known/oauth-protected-resource/mcp""#;
+        r#"Bearer resource_metadata="https://health.example.com/.well-known/oauth-protected-resource/mcp""#;
 
     #[tokio::test]
     async fn middleware_challenges_missing_and_bad_tokens() {
@@ -441,7 +441,7 @@ mod tests {
     fn metadata_url_inserts_well_known() {
         assert_eq!(
             verifier().metadata_url(),
-            "https://vitals.example.com/.well-known/oauth-protected-resource/mcp"
+            "https://health.example.com/.well-known/oauth-protected-resource/mcp"
         );
     }
 }
