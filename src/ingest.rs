@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_http::decompression::RequestDecompressionLayer;
 
-use crate::auth::User;
+use crate::auth::{User, VerifiedEmail};
 use crate::db::Db;
 use crate::tools::{Health, SleepStage, ToolError};
 
@@ -606,6 +606,7 @@ async fn list_tools() -> Response {
 async fn call_tool(
     State(db): State<Db>,
     Extension(user): Extension<User>,
+    email: Option<Extension<VerifiedEmail>>,
     Path(name): Path<String>,
     body: Bytes,
 ) -> Response {
@@ -617,7 +618,7 @@ async fn call_tool(
             Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
         }
     };
-    match Health::new(db).call(&name, args, user).await {
+    match Health::new(db).call_with(&name, args, user, email.map(|e| e.0)).await {
         None => StatusCode::NOT_FOUND.into_response(),
         // Tools return JSON text; `schema_describe` returns plain text, which becomes a JSON string.
         Some(Ok(out)) => Json(serde_json::from_str(&out).unwrap_or(serde_json::Value::String(out))).into_response(),

@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use health_mcp::{auth, db::Db};
+use health_mcp::auth;
+use health_mcp::db::{Db, ShareConfig};
+use health_mcp::mail::Mailer;
+use health_mcp::web::WebLogin;
 use sqlx::postgres::PgPoolOptions;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -61,6 +64,41 @@ async fn main() -> anyhow::Result<()> {
         sqlx::migrate!().run(&owner).await.context("migrations")?;
         owner.close().await;
     }
+    let issuer = env("OIDC_ISSUER")?;
+    let verifier = Arc::new(
+        auth::Verifier::discover(&issuer, &resource)
+            .await
+            .context("OIDC discovery")?,
+    );
+    let api_verifier = Arc::new(
+        auth::Verifier::discover(&issuer, &api_resource)
+            .await
+            .context("OIDC discovery")?,
+    );
+    // `PUBLIC_URL` is an origin (checked by `endpoints`), so this ends in exactly one slash.
+    let public_url = reqwest::Url::parse(&env("PUBLIC_URL")?)?.to_string();
+    let mailer = match std::env::var("SMTP_URL") {
+        Ok(url) => Some(Arc::new(Mailer::new(&url, &env("MAIL_FROM")?)?)),
+        Err(_) => None,
+    };
+    let login = match std::env::var("OIDC_WEB_CLIENT_ID") {
+        Ok(client_id) => Some(Arc::new(WebLogin {
+            client_id,
+            client_secret: env("OIDC_WEB_CLIENT_SECRET")?,
+            authorization_endpoint: api_verifier
+                .authorization_endpoint
+                .clone()
+                .context("the IdP's discovery document has no authorization_endpoint")?,
+            token_endpoint: api_verifier
+                .token_endpoint
+                .clone()
+                .context("the IdP's discovery document has no token_endpoint")?,
+            redirect_uri: format!("{public_url}invite/callback"),
+            audience: api_resource.clone(),
+            http: reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?,
+        })),
+        Err(_) => None,
+    };
     let db = Db {
         app: PgPoolOptions::new()
             .max_connections(APP_CONNECTIONS)
@@ -78,18 +116,12 @@ async fn main() -> anyhow::Result<()> {
             default_timezone: env_or("DEFAULT_TIMEZONE", "Europe/Amsterdam"),
             stale_after: parse_duration(&env_or("WORKOUT_STALE_AFTER", "3h"))?,
         },
+        share: ShareConfig {
+            public_url,
+            mailer,
+            login,
+        },
     };
-    let issuer = env("OIDC_ISSUER")?;
-    let verifier = Arc::new(
-        auth::Verifier::discover(&issuer, &resource)
-            .await
-            .context("OIDC discovery")?,
-    );
-    let api_verifier = Arc::new(
-        auth::Verifier::discover(&issuer, &api_resource)
-            .await
-            .context("OIDC discovery")?,
-    );
     let app = health_mcp::app(db, host, verifier, api_verifier);
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());

@@ -2,7 +2,10 @@ pub mod auth;
 pub mod db;
 pub mod gym;
 pub mod ingest;
+pub mod mail;
+pub mod share;
 pub mod tools;
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +77,7 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
     let ready_db = db.clone();
     let last_ready = Arc::new(tokio::sync::Mutex::new(None::<(std::time::Instant, bool)>));
     let api = ingest::router(db.clone()).layer(middleware::from_fn_with_state(api_verifier.clone(), auth::require));
+    let invite = web::router(db.clone(), api_verifier.clone());
 
     // Stateless: any replica can serve any request, no sticky sessions needed in K8s.
     let mcp = StreamableHttpService::new(
@@ -89,7 +93,9 @@ pub fn app(db: db::Db, host: String, verifier: Arc<auth::Verifier>, api_verifier
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn_with_state(verifier.clone(), auth::require))
         // After the MCP auth layer, which only wraps routes added before it.
-        .nest("/api", api);
+        .nest("/api", api)
+        // Public: the invite code is the secret, and accepting logs in itself.
+        .merge(invite);
     // Only /mcp and /api: discovery and health checks never queue behind them.
     limits(routes, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT)
         .route("/.well-known/oauth-protected-resource", get(auth::metadata))
@@ -213,6 +219,7 @@ mod tests {
             app: pool(),
             reader: pool(),
             gym: Default::default(),
+            share: Default::default(),
         };
         let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
         let res = app
@@ -263,6 +270,7 @@ mod tests {
             app: pool(),
             reader: pool(),
             gym: Default::default(),
+            share: Default::default(),
         };
         let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
         // An unsupported Content-Type: past auth, /api answers 415 without touching the database.
@@ -296,6 +304,7 @@ mod tests {
             app: pool(),
             reader: pool(),
             gym: Default::default(),
+            share: Default::default(),
         };
         let app = app(db, "health.example.com".into(), verifier(MCP), verifier(API));
         let req = Request::post("/mcp")

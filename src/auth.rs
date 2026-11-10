@@ -17,11 +17,26 @@ use tokio::sync::{Mutex, RwLock};
 #[derive(Clone, Debug)]
 pub struct User(pub String);
 
+/// The caller's email, when the token says it is verified (`email` + `email_verified`). Sharing needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifiedEmail(pub String);
+
+/// What a valid access token says about its holder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Identity {
+    pub sub: String,
+    /// Lowercased; only set when `email_verified` is true.
+    pub email: Option<String>,
+}
+
 pub struct Verifier {
     issuer: String,
     /// The protected resource (`PUBLIC_URL` + `/mcp` or `/api`); also the required `aud`.
     resource: String,
     jwks_uri: String,
+    /// From discovery, for the browser login of the invite pages (src/web.rs).
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: Option<String>,
     http: reqwest::Client,
     jwks: Arc<RwLock<JwkSet>>,
     /// Last refresh attempt. Held across the fetch so concurrent unknown-kid callers wait for it,
@@ -32,6 +47,9 @@ pub struct Verifier {
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
 }
 
 const JWKS_MIN_REFRESH: Duration = Duration::from_secs(60);
@@ -44,6 +62,8 @@ impl Verifier {
         struct Discovery {
             issuer: String,
             jwks_uri: String,
+            authorization_endpoint: Option<String>,
+            token_endpoint: Option<String>,
         }
         let url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
         let d: Discovery = http.get(url).send().await?.error_for_status()?.json().await?;
@@ -54,7 +74,10 @@ impl Verifier {
             d.issuer
         );
         let jwks: JwkSet = http.get(&d.jwks_uri).send().await?.error_for_status()?.json().await?;
-        Ok(Self::new(&d.issuer, resource, d.jwks_uri, jwks, http))
+        let mut v = Self::new(&d.issuer, resource, d.jwks_uri, jwks, http);
+        v.authorization_endpoint = d.authorization_endpoint;
+        v.token_endpoint = d.token_endpoint;
+        Ok(v)
     }
 
     pub fn new(issuer: &str, resource: &str, jwks_uri: String, jwks: JwkSet, http: reqwest::Client) -> Self {
@@ -62,6 +85,8 @@ impl Verifier {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
             jwks_uri,
+            authorization_endpoint: None,
+            token_endpoint: None,
             http,
             jwks: Arc::new(RwLock::new(jwks)),
             last_fetch: Arc::new(Mutex::new(Instant::now())),
@@ -70,6 +95,11 @@ impl Verifier {
 
     /// Returns the `sub` of a valid access token.
     pub async fn verify(&self, token: &str) -> Result<String, String> {
+        self.identify(token).await.map(|i| i.sub)
+    }
+
+    /// Validates an access token and returns who holds it.
+    pub async fn identify(&self, token: &str) -> Result<Identity, String> {
         let header = decode_header(token).map_err(|e| e.to_string())?;
         // RFC 9068: rejects ID tokens and other JWTs signed by the same issuer.
         if !matches!(header.typ.as_deref(), Some("at+jwt" | "application/at+jwt")) {
@@ -89,9 +119,11 @@ impl Verifier {
         v.set_audience(&[&self.resource]);
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         v.validate_nbf = true;
-        decode::<Claims>(token, &key, &v)
-            .map(|d| d.claims.sub)
-            .map_err(|e| e.to_string())
+        let c = decode::<Claims>(token, &key, &v).map_err(|e| e.to_string())?.claims;
+        Ok(Identity {
+            sub: c.sub,
+            email: c.email.filter(|_| c.email_verified).map(|e| e.to_lowercase()),
+        })
     }
 
     async fn key(&self, kid: &str) -> Option<DecodingKey> {
@@ -146,9 +178,12 @@ pub async fn require(State(v): State<Arc<Verifier>>, mut req: Request, next: Nex
         .map(|(_, t)| t);
     let error = match token {
         None => None,
-        Some(t) => match v.verify(t).await {
-            Ok(sub) => {
+        Some(t) => match v.identify(t).await {
+            Ok(Identity { sub, email }) => {
                 req.extensions_mut().insert(User(sub));
+                if let Some(e) = email {
+                    req.extensions_mut().insert(VerifiedEmail(e));
+                }
                 return next.run(req).await;
             }
             Err(e) => {
@@ -172,7 +207,8 @@ pub async fn metadata(State(v): State<Arc<Verifier>>) -> impl IntoResponse {
         "authorization_servers": [v.issuer],
         "bearer_methods_supported": ["header"],
         // Without this, clients like claude.ai request every scope the IdP lists, and Authelia rejects ones the client lacks.
-        "scopes_supported": ["openid", "offline_access"],
+        // `email`: sharing binds invites to the verified email in the access token.
+        "scopes_supported": ["openid", "offline_access", "email"],
     }))
 }
 
@@ -221,6 +257,27 @@ mod tests {
             verifier().verify(&token("at+jwt", claims(ISS, AUD, 300))).await,
             Ok("alice".into())
         );
+    }
+
+    #[tokio::test]
+    async fn email_counts_only_when_verified() {
+        let v = verifier();
+        let with = |verified: serde_json::Value| {
+            let mut c = claims(ISS, AUD, 300);
+            c["email"] = json!("Alice@Example.com");
+            if !verified.is_null() {
+                c["email_verified"] = verified;
+            }
+            token("at+jwt", c)
+        };
+        let email = |t: String| {
+            let v = &v;
+            async move { v.identify(&t).await.unwrap().email }
+        };
+        assert_eq!(email(with(json!(true))).await, Some("alice@example.com".into()));
+        assert_eq!(email(with(json!(false))).await, None);
+        assert_eq!(email(with(serde_json::Value::Null)).await, None);
+        assert_eq!(email(token("at+jwt", claims(ISS, AUD, 300))).await, None);
     }
 
     #[tokio::test]
@@ -434,7 +491,7 @@ mod tests {
         let m: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["resource"], AUD);
         assert_eq!(m["authorization_servers"], json!([ISS]));
-        assert_eq!(m["scopes_supported"], json!(["openid", "offline_access"]));
+        assert_eq!(m["scopes_supported"], json!(["openid", "offline_access", "email"]));
     }
 
     #[test]

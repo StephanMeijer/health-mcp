@@ -28,6 +28,28 @@ pub struct Db {
     /// `vitals_reader`: the SQL tool, read-only views in schema `vitals`.
     pub reader: PgPool,
     pub gym: GymConfig,
+    pub share: ShareConfig,
+}
+
+/// Settings of sharing: where invite links point and how invite mails go out.
+#[derive(Clone)]
+pub struct ShareConfig {
+    /// `PUBLIC_URL`, with a trailing slash; invite links are `{public_url}invite/{code}`.
+    pub public_url: String,
+    /// `None`: no mail is sent, and `share_invite` returns the link to pass on by hand.
+    pub mailer: Option<std::sync::Arc<crate::mail::Mailer>>,
+    /// `None`: the invite page can't log in, and says to accept in the app or Claude.
+    pub login: Option<std::sync::Arc<crate::web::WebLogin>>,
+}
+
+impl Default for ShareConfig {
+    fn default() -> Self {
+        Self {
+            public_url: "http://localhost:8080/".into(),
+            mailer: None,
+            login: None,
+        }
+    }
 }
 
 /// Settings of the gym tools (`DEFAULT_TIMEZONE`, `WORKOUT_STALE_AFTER`).
@@ -89,9 +111,12 @@ impl Db {
         Ok(tx)
     }
 
-    /// Read-only transaction for untrusted SQL. The reader role cannot sign, so the signature comes from the app pool.
-    pub async fn reader_tx(&self, user: &str) -> sqlx::Result<Tx> {
-        let sig: String = sqlx::query_scalar("SELECT vitals_private.sign($1)")
+    /// Read-only transaction for untrusted SQL over `user`'s data in `domains`. The reader role cannot sign, so the
+    /// signature comes from the app pool. It covers the domains too (migration 0011).
+    pub async fn reader_tx(&self, user: &str, domains: crate::share::Domains) -> sqlx::Result<Tx> {
+        let domains = domains.to_string();
+        let sig: String = sqlx::query_scalar("SELECT vitals_private.sign($1 || '/' || $2)")
+            .bind(&domains)
             .bind(user)
             .fetch_one(&self.app)
             .await?;
@@ -103,11 +128,15 @@ impl Db {
         sqlx::query("SET LOCAL search_path = vitals, public")
             .execute(&mut *tx)
             .await?;
-        sqlx::query("SELECT set_config('vitals.user_id', $1, true), set_config('vitals.user_sig', $2, true)")
-            .bind(user)
-            .bind(&sig)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "SELECT set_config('vitals.user_id', $1, true), set_config('vitals.user_sig', $2, true),
+                    set_config('vitals.domains', $3, true)",
+        )
+        .bind(user)
+        .bind(&sig)
+        .bind(&domains)
+        .execute(&mut *tx)
+        .await?;
         Ok(tx)
     }
 }

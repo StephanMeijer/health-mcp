@@ -5,6 +5,8 @@ A remote MCP server for personal health, in TimescaleDB. It merges the former gy
 - **Gym logbook:** you say *"I arrived at the NDSM Trainmore"*, send a photo plus *"12 on 13kg"*, and it logs the workout. Ask *"what should I do next?"* and it recommends from your history and what that gym has.
 - **Vitals:** heart rate, HRV, body measurements (weight, body fat, waist, blood pressure, glucose, …) and sleep, logged by hand or by trackers. Raw tracker data (e.g. a Polar H10 chest strap) arrives through an ingest API (`POST /api/v1/ingest`) from devices the app registers per user (`/api/v1/devices`).
 - **One read-only SQL tool over both,** so a question like "training volume vs HRV" is one query.
+- **Sharing:** invite someone by email to see (`ro`) or also change (`rw`) your gym logbook and/or vitals. They accept
+  from the mail, in the app or in Claude, then pass your email as `owner` to any tool.
 
 It supports multiple users, authenticates with OAuth (Authelia JWT access tokens) and keys all data by the token's `sub`.
 Rust (rmcp, axum, sqlx). Design and security model: [SPEC.md](SPEC.md).
@@ -37,6 +39,7 @@ Rust (rmcp, axum, sqlx). Design and security model: [SPEC.md](SPEC.md).
 | Gym analysis | `training_overview`, `muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
 | Vitals | `reading_add/update/delete/list/aggregate`, `sleep_add/update/delete/list`, `summary` |
 | SQL | `schema_describe`, `sql_query` (read-only, through per-user views over both gym and vitals data) |
+| Sharing | `share_invite`, `share_list`, `share_update`, `share_remove`, `share_respond`; every data tool and `sql_query` take `owner` |
 
 Wherever a gym tool takes a gym or exercise, you can give an id or a name, in any word order and with typos tolerated. An ambiguous or unknown name returns the candidates, so the model asks instead of guessing.
 
@@ -63,6 +66,8 @@ docker run -p 8080:8080 \
 | `DATABASE_OWNER_URL` | runs the migrations on startup; leave unset to skip them |
 | `DEFAULT_TIMEZONE` | gym timezone for users who haven't set one; default `Europe/Amsterdam` |
 | `WORKOUT_STALE_AFTER` | default `3h` (`90m`, `45s` also work); at most `8760h` |
+| `SMTP_URL`, `MAIL_FROM` | invite mails, e.g. `smtp://user:pass@smtp.example.com:587?tls=required`; unset: `share_invite` returns the link to pass on |
+| `OIDC_WEB_CLIENT_ID`, `OIDC_WEB_CLIENT_SECRET` | the `health-web` client the invite page logs in with; unset: accept in the app or Claude |
 | `BIND_ADDR` | default `0.0.0.0:8080` |
 
 Probes: `/healthz` for liveness, `/readyz` for readiness (it checks both database pools).
@@ -80,7 +85,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA vitals_data TO vita
 Don't give `vitals_reader` any grant on `vitals_data` or `gym`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
 
 **Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
-(full snippet in SPEC.md). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
+(full snippet in SPEC.md). For sharing, every client needs the `email` scope and a claims policy that puts `email` and
+`email_verified` in the access token, and the invite page needs a confidential client `health-web` (SPEC.md, Sharing). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
 For the phone apps, register public clients (`vitals-android`, `gym-android`) with PKCE, `offline_access` and
 `audience: ['<PUBLIC_URL>/api']` (snippet in SPEC.md, Ingest API). In an app, enter only `<PUBLIC_URL>`; it discovers the rest.
 
