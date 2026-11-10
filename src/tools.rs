@@ -11,8 +11,9 @@ use serde_json::{Map, Value, json};
 use sqlx::{AssertSqlSafe, Executor, SqlSafeStr};
 use uuid::Uuid;
 
-use crate::auth::User;
+use crate::auth::{User, VerifiedEmail};
 use crate::db::{Db, DbFault, classify, retryable};
+use crate::share::{self, Domains, Scope};
 
 pub type ToolResult = Result<String, ToolError>;
 
@@ -362,7 +363,7 @@ pub struct SqlQuery {
 
 #[derive(Clone)]
 pub struct Health {
-    db: Db,
+    pub(crate) db: Db,
     /// The gym tools' database handle (src/gym/tools.rs).
     pub(crate) gym: crate::gym::db::App,
     /// The vitals and gym tools (`all_tools`); `#[tool_handler]` lists and calls through it.
@@ -380,7 +381,7 @@ pub(crate) fn user(parts: &Parts) -> Result<&str, ToolError> {
 /// For the typed tools, which run server-written SQL: data the database refused (a CHECK, the range trigger, a bad
 /// value) is the caller's to fix and its message helps the model; a missing grant, an undefined column or a timeout
 /// is the server's fault, logged and reported as internal (see [`classify`]).
-fn db_err(e: sqlx::Error) -> ToolError {
+pub(crate) fn db_err(e: sqlx::Error) -> ToolError {
     match classify(&e) {
         DbFault::Caller(m) => ToolError::User(m),
         DbFault::Retry => {
@@ -432,7 +433,7 @@ async fn insert_stages(tx: &mut crate::db::Tx, user: &str, id: Uuid, stages: &[S
     Ok(())
 }
 
-#[tool_router]
+#[tool_router(vis = "pub(crate)")]
 impl Health {
     pub fn new(db: Db) -> Self {
         Self {
@@ -443,7 +444,14 @@ impl Health {
     }
 
     #[tool(
-        description = "Log 1–1000 manual readings of one kind. heart_rate takes `bpm`, hrv `rmssd_ms`; every other kind takes `value` in a fixed unit: weight, muscle_mass, bone_mass kg; body_fat, body_water, spo2 %; height, waist, hip, neck cm; visceral_fat level; temperature °C; glucose mmol/L; systolic, diastolic mmHg; pulse bpm. Blood pressure is two readings (systolic, diastolic) at the same time, plus pulse if measured."
+        description = "Log 1–1000 manual readings of one kind. heart_rate takes `bpm`, hrv `rmssd_ms`; every other kind takes `value` in a fixed unit: weight, muscle_mass, bone_mass kg; body_fat, body_water, spo2 %; height, waist, hip, neck cm; visceral_fat level; temperature °C; glucose mmol/L; systolic, diastolic mmHg; pulse bpm. Blood pressure is two readings (systolic, diastolic) at the same time, plus pulse if measured.",
+        annotations(
+            title = "Log readings",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub async fn reading_add(
         &self,
@@ -481,7 +489,14 @@ impl Health {
     }
 
     #[tool(
-        description = "Change fields of one manual reading, identified by kind and exact time. Imported readings cannot be changed."
+        description = "Change fields of one manual reading, identified by kind and exact time. Imported readings cannot be changed.",
+        annotations(
+            title = "Update reading",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn reading_update(
         &self,
@@ -516,7 +531,14 @@ impl Health {
     }
 
     #[tool(
-        description = "Delete manual readings of one kind, by exact times or by a [from, to) range. Imported readings are never deleted."
+        description = "Delete manual readings of one kind, by exact times or by a [from, to) range. Imported readings are never deleted.",
+        annotations(
+            title = "Delete readings",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn reading_delete(
         &self,
@@ -547,7 +569,10 @@ impl Health {
         Ok(json!({"deleted": n, "kind": p.kind.name()}).to_string())
     }
 
-    #[tool(description = "List raw readings of one kind in a time range (default: last 30 days), newest first.")]
+    #[tool(
+        description = "List raw readings of one kind in a time range (default: last 30 days), newest first.",
+        annotations(title = "List readings", read_only_hint = true, open_world_hint = false)
+    )]
     pub async fn reading_list(
         &self,
         Parameters(p): Parameters<ReadingList>,
@@ -579,7 +604,8 @@ impl Health {
     }
 
     #[tool(
-        description = "Aggregate one field per time bucket: n, avg, min, max, stddev, p50, p90. E.g. daily resting heart rate, weekly weight trend. At most 1000 buckets; truncated = true means use a wider bucket or a shorter range."
+        description = "Aggregate one field per time bucket: n, avg, min, max, stddev, p50, p90. E.g. daily resting heart rate, weekly weight trend. At most 1000 buckets; truncated = true means use a wider bucket or a shorter range.",
+        annotations(title = "Aggregate readings", read_only_hint = true, open_world_hint = false)
     )]
     pub async fn reading_aggregate(
         &self,
@@ -623,7 +649,16 @@ impl Health {
         Ok(capped_json(&rows, "buckets", false))
     }
 
-    #[tool(description = "Log a manual sleep session, optionally with stage segments (awake, light, deep, rem).")]
+    #[tool(
+        description = "Log a manual sleep session, optionally with stage segments (awake, light, deep, rem).",
+        annotations(
+            title = "Log sleep",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     pub async fn sleep_add(
         &self,
         Parameters(p): Parameters<SleepAdd>,
@@ -647,7 +682,16 @@ impl Health {
         Ok(json!({"id": id}).to_string())
     }
 
-    #[tool(description = "Change a manual sleep session; `stages` replaces all its stages.")]
+    #[tool(
+        description = "Change a manual sleep session; `stages` replaces all its stages.",
+        annotations(
+            title = "Update sleep",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     pub async fn sleep_update(
         &self,
         Parameters(p): Parameters<SleepUpdate>,
@@ -685,7 +729,16 @@ impl Health {
         Ok(json!({"id": p.id}).to_string())
     }
 
-    #[tool(description = "Delete a manual sleep session and its stages.")]
+    #[tool(
+        description = "Delete a manual sleep session and its stages.",
+        annotations(
+            title = "Delete sleep",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     pub async fn sleep_delete(
         &self,
         Parameters(p): Parameters<SleepDelete>,
@@ -709,7 +762,8 @@ impl Health {
     }
 
     #[tool(
-        description = "List sleep sessions starting in a range (default: last 30 days) with hours and seconds per stage. At most 1000 sessions, and with include_stages at most 1000 stage segments in total; truncated = true means narrow the range."
+        description = "List sleep sessions starting in a range (default: last 30 days) with hours and seconds per stage. At most 1000 sessions, and with include_stages at most 1000 stage segments in total; truncated = true means narrow the range.",
+        annotations(title = "List sleep", read_only_hint = true, open_world_hint = false)
     )]
     pub async fn sleep_list(
         &self,
@@ -760,7 +814,8 @@ impl Health {
     }
 
     #[tool(
-        description = "Overview: latest reading of every vital, 7- and 30-day averages, and sleep duration and stage split."
+        description = "Overview: latest reading of every vital, 7- and 30-day averages, and sleep duration and stage split.",
+        annotations(title = "Vitals summary", read_only_hint = true, open_world_hint = false)
     )]
     pub async fn summary(&self, Extension(parts): Extension<Parts>) -> ToolResult {
         let user = user(&parts)?;
@@ -810,14 +865,16 @@ impl Health {
     }
 
     #[tool(
-        description = "Describe the views available to sql_query: columns, units and example queries. Call before writing SQL."
+        description = "Describe the views available to sql_query: columns, units and example queries. Call before writing SQL.",
+        annotations(title = "Describe SQL views", read_only_hint = true, open_world_hint = false)
     )]
     pub async fn schema_describe(&self) -> String {
         SCHEMA_DOC.to_owned()
     }
 
     #[tool(
-        description = "Run one read-only SQL query (PostgreSQL + TimescaleDB, e.g. time_bucket, percentile_cont) over your own data. 5 s timeout, at most 1000 rows and 1 MiB. Call schema_describe first."
+        description = "Run one read-only SQL query (PostgreSQL + TimescaleDB, e.g. time_bucket, percentile_cont) over your own data. 5 s timeout, at most 1000 rows and 1 MiB. Call schema_describe first.",
+        annotations(title = "Run SQL query", read_only_hint = true, open_world_hint = false)
     )]
     pub async fn sql_query(
         &self,
@@ -825,8 +882,10 @@ impl Health {
         Extension(parts): Extension<Parts>,
     ) -> ToolResult {
         let user = user(&parts)?;
+        // Set by share::act_as when this runs on someone else's data; your own data is every domain.
+        let domains = parts.extensions.get::<Domains>().copied().unwrap_or(Domains::ALL);
         let sql = p.sql.trim().trim_end_matches(';');
-        let mut tx = self.db.reader_tx(user).await.map_err(db_err)?;
+        let mut tx = self.db.reader_tx(user, domains).await.map_err(db_err)?;
         // Postgres parses the bare SQL first: one statement that parses alone has balanced parentheses, quotes and
         // comments, so it can't close the wrapper below and bypass its caps.
         (&mut *tx)
@@ -858,21 +917,67 @@ impl Health {
 
 /// The same tools for the app over `/api`: names, arguments and results exactly as over MCP.
 impl Health {
-    /// Every tool with its input JSON Schema, generated from the same structs as MCP's `tools/list`.
+    /// Every tool with its input JSON Schema, generated from the same structs as MCP's `tools/list`, plus the
+    /// `owner` argument on the tools that can run on someone else's shared data.
     pub fn tool_list() -> Vec<rmcp::model::Tool> {
-        Self::all_tools().list_all()
+        static TOOLS: std::sync::LazyLock<Vec<rmcp::model::Tool>> = std::sync::LazyLock::new(|| {
+            let mut tools = Health::all_tools().list_all();
+            for t in &mut tools {
+                if matches!(share::scope(&t.name), Some(Scope::Data(..) | Scope::Sql)) {
+                    let mut schema = (*t.input_schema).clone();
+                    let props = schema.entry("properties").or_insert_with(|| json!({}));
+                    props.as_object_mut().expect("properties is an object").insert(
+                        "owner".into(),
+                        json!({"type": "string", "description": share::OWNER_DOC}),
+                    );
+                    t.input_schema = std::sync::Arc::new(schema);
+                }
+            }
+            tools
+        });
+        TOOLS.clone()
     }
 
-    /// The vitals tools plus the gym tools.
+    /// The vitals, gym and sharing tools.
     fn all_tools() -> ToolRouter<Self> {
-        Self::tool_router() + Self::gym_router()
+        Self::tool_router() + Self::gym_router() + Self::share_router()
     }
 
     /// Runs tool `name` with JSON `args` as `user`; `None` if there is no such tool.
     pub async fn call(&self, name: &str, args: Value, user: User) -> Option<ToolResult> {
-        let owner = user.0.clone();
+        self.call_with(name, args, user, None).await
+    }
+
+    /// [`Self::call`] with the caller's verified email, which the sharing tools need.
+    pub async fn call_with(
+        &self,
+        name: &str,
+        mut args: Value,
+        user: User,
+        email: Option<VerifiedEmail>,
+    ) -> Option<ToolResult> {
+        let acting = match args.as_object_mut() {
+            Some(m) => match share::act_as(&self.db, &user, email.as_ref(), name, m).await {
+                Ok(a) => a,
+                Err(e) => return Some(Err(e)),
+            },
+            None => None,
+        };
         let mut parts = axum::http::Request::new(()).into_parts().0;
-        parts.extensions.insert(user);
+        let owner = match acting {
+            Some(a) => {
+                parts.extensions.insert(a.domains);
+                a.user
+            }
+            None => {
+                if let Some(e) = email {
+                    parts.extensions.insert(e);
+                }
+                user
+            }
+        };
+        let owner_sub = owner.0.clone();
+        parts.extensions.insert(owner);
         let x = Extension(parts);
         // Bad arguments are the caller's error, like a tool error: Some(Err).
         macro_rules! with_args {
@@ -896,8 +1001,13 @@ impl Health {
             "sql_query" => with_args!(sql_query),
             "summary" => self.summary(x).await,
             "schema_describe" => Ok(self.schema_describe().await),
+            "share_invite" => with_args!(share_invite),
+            "share_list" => self.share_list(x).await,
+            "share_update" => with_args!(share_update),
+            "share_remove" => with_args!(share_remove),
+            "share_respond" => with_args!(share_respond),
             _ => {
-                return crate::gym::tools::call_api(&self.gym, &owner, name, args)
+                return crate::gym::tools::call_api(&self.gym, &owner_sub, name, args)
                     .await
                     .map(crate::gym::tools::out);
             }
@@ -991,6 +1101,39 @@ FROM n ORDER BY night;"#;
 // The field, not the macro's default `Self::tool_router()`, which is the vitals router only (#115).
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Health {
+    /// The router's call, after [`share::act_as`]: with `owner`, the tool runs as that owner.
+    async fn call_tool(
+        &self,
+        mut request: rmcp::model::CallToolRequestParams,
+        mut context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        if let (Some(args), Some(parts)) = (request.arguments.as_mut(), context.extensions.get_mut::<Parts>()) {
+            let caller = parts.extensions.get::<User>().cloned();
+            let email = parts.extensions.get::<VerifiedEmail>().cloned();
+            if let Some(caller) = caller {
+                match share::act_as(&self.db, &caller, email.as_ref(), &request.name, args).await {
+                    Ok(Some(a)) => {
+                        parts.extensions.insert(a.user);
+                        parts.extensions.insert(a.domains);
+                        parts.extensions.remove::<VerifiedEmail>();
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Ok(rmcp::model::CallToolResult::error(e.into_contents()).into()),
+                }
+            }
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListToolsResult::with_all_items(Self::tool_list()))
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).with_instructions(format!(
@@ -1000,7 +1143,10 @@ impl ServerHandler for Health {
              schema_describe + sql_query for anything else. Write tools only change readings logged manually \
              (source 'manual'); imported readings are read-only. Convert lb to kg, in to cm, °F to °C and mg/dL to mmol/L before logging. \
              sql_query also sees the gym logbook (workouts, sets, exercises), so questions that span both \
-             (training load vs HRV or sleep) are one query.",
+             (training load vs HRV or sleep) are one query.\n\n\
+             Sharing: share_invite lets someone see (ro) or also change (rw) the user's gym logbook and/or vitals; \
+             share_list shows who shares with whom. To work on data someone shared with the user, pass their email \
+             as `owner` to any data tool or sql_query, and say whose data it is in your answer.",
             crate::gym::tools::INSTRUCTIONS
         ))
     }

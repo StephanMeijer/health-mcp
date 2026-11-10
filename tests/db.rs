@@ -38,6 +38,7 @@ async fn setup() -> (Health, Db, PgPool) {
             .await
             .unwrap(),
         gym: Default::default(),
+        share: Default::default(),
     };
     (Health::new(db.clone()), db, owner)
 }
@@ -240,6 +241,7 @@ async fn server_faults_in_typed_tools_are_internal(owner: PgPool) {
             .await
             .unwrap(),
         gym: Default::default(),
+        share: Default::default(),
     };
     sqlx::query("REVOKE SELECT ON vitals_data.hrv FROM vitals_app")
         .execute(&owner)
@@ -595,6 +597,32 @@ async fn sql_query_cannot_escape_the_caller() {
         .unwrap();
     let forged_sig = sqlx::query("SELECT * FROM vitals.heart_rate").fetch_all(&mut *tx).await;
     assert!(forged_sig.unwrap_err().to_string().contains("no authenticated user"));
+
+    // The domains are signed too: a vitals-only transaction cannot widen them, nor pass its signature off as gym's.
+    let vitals_only = health_mcp::share::Domains {
+        gym: false,
+        vitals: true,
+    };
+    let mut tx = db.reader_tx(&a, vitals_only).await.unwrap();
+    let denied = sqlx::query("SELECT * FROM vitals.workout_set")
+        .fetch_all(&mut *tx)
+        .await;
+    assert!(denied.unwrap_err().to_string().contains("no access to the gym data"));
+    for domains in ["gym,vitals", "vitals,gym", "", "gym"] {
+        for view in ["vitals.workout_set", "vitals.heart_rate"] {
+            let mut tx = db.reader_tx(&a, vitals_only).await.unwrap();
+            sqlx::query("SELECT set_config('vitals.domains', $1, true)")
+                .bind(domains)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            let widened = sqlx::query(AssertSqlSafe(format!("SELECT * FROM {view}")))
+                .fetch_all(&mut *tx)
+                .await;
+            let err = widened.expect_err(&format!("{domains:?} read {view}")).to_string();
+            assert!(err.contains("no authenticated user"), "{domains:?} {view}: {err}");
+        }
+    }
 }
 
 /// The gym views filter like the vitals ones: workout_set through its workout's owner.
@@ -663,6 +691,7 @@ async fn sql_query_does_not_leak_session_state() {
         app: db0.app.clone(),
         reader,
         gym: Default::default(),
+        share: Default::default(),
     });
     let u = uid("lock");
     sql(&v, &u, "SELECT pg_advisory_lock(42) AS x").await.unwrap();
@@ -1576,7 +1605,7 @@ async fn app_gets_the_tool_schemas() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     names.sort();
-    // The vitals tools and the gym tools.
+    // The vitals, gym and sharing tools.
     assert_eq!(
         names,
         [
@@ -1608,6 +1637,11 @@ async fn app_gets_the_tool_schemas() {
             "set_update",
             "settings_get",
             "settings_update",
+            "share_invite",
+            "share_list",
+            "share_remove",
+            "share_respond",
+            "share_update",
             "sleep_add",
             "sleep_delete",
             "sleep_list",
@@ -1624,6 +1658,12 @@ async fn app_gets_the_tool_schemas() {
         ]
     );
     assert!(out.as_array().unwrap().iter().all(|t| t["inputSchema"].is_object()));
+    // `owner` is on the tools that can run on shared data, and only there.
+    for t in out.as_array().unwrap() {
+        let name = t["name"].as_str().unwrap();
+        let shareable = !name.starts_with("share_") && name != "schema_describe";
+        assert_eq!(t["inputSchema"]["properties"]["owner"].is_object(), shareable, "{name}");
+    }
     // The schema names the allowed sources, so the app can validate them before calling.
     let reading_list = out
         .as_array()

@@ -30,8 +30,10 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
 - health-mcp is a **resource server only**. It never issues tokens.
 - It serves `/.well-known/oauth-protected-resource` (RFC 9728) with `authorization_servers: [<issuer>]`, the exact issuer
   named in `OIDC_ISSUER`'s discovery document (it may differ from `OIDC_ISSUER` by a trailing slash).
-  It also advertises `scopes_supported: [openid, offline_access]`, so clients such as claude.ai request only those
-  instead of every scope the IdP lists. Every Authelia client for health-mcp must allow at least these two scopes.
+  It also advertises `scopes_supported: [openid, offline_access, email]`, so clients such as claude.ai request only those
+  instead of every scope the IdP lists. Every Authelia client for health-mcp must allow these three scopes.
+- Sharing needs the caller's verified email in the access token: `email` and `email_verified`, which Authelia puts in
+  access tokens only through a claims policy (below). A token without them still works for everything except sharing.
 - `/mcp` without a valid bearer token returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 - Token checks: signature (JWKS), `iss`, `aud` (= the resource, `PUBLIC_URL` + `/mcp`), `exp`, `nbf`. `user_id` = the token's `sub`.
 - The metadata is also served at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path insertion).
@@ -56,13 +58,17 @@ the IdP itself, Kubernetes manifests, continuous aggregates, alerts and a UI.
         - client_id: 'claude-health'
           client_secret: '$pbkdf2-sha512$…'
           redirect_uris: ['https://claude.ai/api/mcp/auth_callback']
-          scopes: ['openid', 'offline_access']
+          scopes: ['openid', 'offline_access', 'email']
           grant_types: ['authorization_code', 'refresh_token']
           response_types: ['code']
           require_pkce: true
           pkce_challenge_method: 'S256'
           audience: ['https://health.example.com/mcp']    # = PUBLIC_URL + /mcp
           access_token_signed_response_alg: 'RS256'
+          claims_policy: 'health'
+      claims_policies:
+        health:
+          access_token: ['email', 'email_verified']
   ```
 
 ## Schema
@@ -165,8 +171,9 @@ The design:
    `vitals_reader` handles the SQL tool: SELECT on the views in schema `vitals` only. Neither role is a member of any
    other role, so `set_config('role', …)` can't escalate. Neither has `BYPASSRLS`. Migrations run as the owner role.
 2. **Signed user id.** The migration creates a random secret in `vitals_private.secret`, which no login role can read.
-   `vitals_private.sign(user_id)` is `SECURITY DEFINER` and only `vitals_app` may execute it.
-   For each `sql_query` the server sets the GUCs `vitals.user_id` and `vitals.user_sig` (transaction-local).
+   `vitals_private.sign(…)` is `SECURITY DEFINER` and only `vitals_app` may execute it.
+   For each `sql_query` the server sets the GUCs `vitals.user_id`, `vitals.domains` and `vitals.user_sig`
+   (transaction-local; the signature covers domains and user, see Sharing).
    `vitals.current_user_id()` (`SECURITY DEFINER`) checks the HMAC and raises an error if it doesn't match.
    A query can still set a different user id, but it can't produce a valid signature for it.
 3. **`vitals_app`:** every query filters on `user_id = $user` itself (the user from the verified token), and writes
@@ -235,7 +242,8 @@ Importers connect as their own role and write to `vitals_data.*` (they're truste
           token_endpoint_auth_method: 'none'
           redirect_uris: ['com.stephanmeijer.vitals:/oauth/callback']   # must match the app's redirect scheme
           # gym-android: the same with client_id 'gym-android' and 'com.stephanmeijer.gym:/oauth/callback'
-          scopes: ['openid', 'offline_access']
+          scopes: ['openid', 'offline_access', 'email']
+          claims_policy: 'health'
           grant_types: ['authorization_code', 'refresh_token']
           response_types: ['code']
           require_pkce: true
@@ -341,6 +349,50 @@ Code: `src/gym/`. Usage rules for the model are in the server instructions (`src
 - **Sorting:** names, machines and variants sort with `COLLATE "und-x-icu"`. The TimescaleDB image is musl-based, and its
   `en_US.utf8` collation sorts bytewise ("Technogym" before "matrix").
 
+## Sharing
+
+An owner lets another user read (`ro`) or read and write (`rw`) their data, per domain: `gym` (the logbook) and
+`vitals`. Sharing itself, devices and ingest stay with the owner.
+
+- **Invite:** `share_invite(email, gym, vitals)` stores an invite (schema `share`, migration 0011) for 7 days and mails
+  a link `PUBLIC_URL/invite/<code>`. The code is 64 hex characters from the OS CSPRNG; only its sha256 is stored.
+  Inviting the same address again replaces the invite. The owner must have a verified email, which the grantee sees.
+- **Accept:** only a caller whose token carries the invited address as a verified email (`email_verified: true`) can
+  accept: with `share_respond` (app or Claude, by the invite id from `share_list`), or on the invite page. The page
+  shows who shares what, with Accept and Decline. Accept logs in with Authelia (authorization code with PKCE, client
+  `health-web`, state and verifier in a 10-minute HttpOnly cookie on `/invite`), gets an `/api` access token and checks it
+  exactly like an app token before accepting. Decline needs only the link.
+- **Use:** every data tool and `sql_query` take an optional `owner`: the owner's email (or `sub`). One check runs
+  before the tool, for MCP (`call_tool`) and `/api` alike (`share::act_as`): the tool's domain comes from the router
+  it is in, read or write from its `read_only_hint` (a tool without the hint counts as writing). On success the tool
+  runs with the owner as its user and never sees the grantee. Unknown owner and "shares nothing with you" give the same
+  error. `schema_describe` and the `share_*` tools refuse `owner`.
+- **sql_query:** the reader transaction also sets `vitals.domains` (`gym,vitals`, or what the owner shared), and the
+  signature covers `domains || '/' || user_id` (domains never contain `/`). `vitals.current_user_id()`, used by the vitals
+  views, raises unless `vitals` is in the list; `vitals.gym_user_id()`, used by the gym views, unless `gym` is. A query
+  can't widen its domains without breaking the signature.
+- **Change and stop:** `share_update` (owner; both `none` removes the share), `share_remove` with a required `what`:
+  `revoke` (stop sharing your data with `email`), `leave` (stop seeing `email`'s data) or `withdraw` (cancel your
+  pending invite to `email`). Each removes exactly that one thing, so leaving someone's data keeps your own share with
+  them, and errors when there is nothing of that kind. Access is checked on every call, so a change applies at once.
+
+Authelia client for the invite page:
+
+```yaml
+        - client_id: 'health-web'
+          client_secret: '$pbkdf2-sha512$…'
+          redirect_uris: ['https://health.example.com/invite/callback']
+          scopes: ['openid', 'email']
+          claims_policy: 'health'
+          grant_types: ['authorization_code']
+          response_types: ['code']
+          require_pkce: true
+          pkce_challenge_method: 'S256'
+          audience: ['https://health.example.com/api']
+          access_token_signed_response_alg: 'RS256'
+          token_endpoint_auth_method: 'client_secret_basic'
+```
+
 ## Config (env)
 
 `DATABASE_URL` (vitals_app), `DATABASE_READER_URL` (vitals_reader), `DATABASE_OWNER_URL` (migrations only),
@@ -349,7 +401,10 @@ Code: `src/gym/`. Usage rules for the model are in the server instructions (`src
 the server refuses to start with a path),
 `BIND_ADDR` (default `0.0.0.0:8080`), `RUST_LOG`, and for the gym tools `DEFAULT_TIMEZONE` (default `Europe/Amsterdam`)
 and `WORKOUT_STALE_AFTER` (default `3h`, at most `8760h`).
-Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`
+Sharing: `SMTP_URL` (e.g. `smtp://user:pass@smtp.example.com:587?tls=required`; unset: no mail, `share_invite` returns
+the link to pass on) with `MAIL_FROM`, and `OIDC_WEB_CLIENT_ID` / `OIDC_WEB_CLIENT_SECRET` (the `health-web` client;
+unset: the invite page says to accept in the app or Claude).
+Endpoints: `/mcp` (stateless streamable HTTP), `/api/v1/ingest`, `/invite/{code}` (public; the code is the secret), `/.well-known/oauth-protected-resource[/mcp|/api]`, `/healthz`
 (liveness: always `200` while the process runs), `/readyz` (readiness: `200` when both database pools reach the database
 within 2 s, else `503`; a pool whose connections are all busy counts as reachable, one check runs at a time per process,
 and its result is reused for 1 s).
