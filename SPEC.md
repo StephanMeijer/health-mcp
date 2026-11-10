@@ -212,7 +212,7 @@ Tools that bucket by day also take `tz`, an IANA zone (default `UTC`).
 | `reading_list` | Raw readings: `kind`, `from`, `to`, optional `source`, `limit` (≤1000), `oldest_first`. |
 | `reading_aggregate` | `time_bucket(bucket, time, tz)` over `kind`/`field`, with `avg`, `min`, `max`, `count`, `stddev`, `p50`, `p90`, and optional `source`. At most 1000 buckets: `{"truncated": …, "buckets": […]}`. |
 | `sleep_add` / `sleep_update` / `sleep_delete` | A session with optional stages. |
-| `sleep_list` | Sessions in a range, with `include_stages` and per-stage totals. |
+| `sleep_list` | Sessions in a range, with `include_stages` and per-stage totals: `{"truncated", "sessions"}`, at most 1000 sessions and, with `include_stages`, 1000 stage segments in total (per-stage totals stay complete). |
 | `summary` | For each vital: the latest value plus 7-day and 30-day averages. Sleep: average duration over the last 7 and 30 days, and the stage split over the last 30 days (the same nights as `nights_30d`). |
 | `schema_describe` | Tables, columns, units and example queries, so the model can write correct SQL. |
 | `sql_query` | Read-only SQL as described above. Returns rows as JSON objects (column order kept) and a `truncated` flag. |

@@ -471,7 +471,7 @@ async fn other_users_rows_are_invisible_and_untouchable() {
         )
         .await
         .unwrap();
-    assert_eq!(bobs_nights, "[]");
+    assert_eq!(bobs_nights, r#"{"truncated":false,"sessions":[]}"#);
     let stages = json!({"id": id, "stages": [{"time": "2026-10-04T01:00:00Z", "stage": "rem", "duration_s": 60}]});
     assert!(v.sleep_update(p(stages), as_user(&b)).await.is_err());
     assert!(v.sleep_delete(p(json!({ "id": id })), as_user(&b)).await.is_err());
@@ -484,7 +484,7 @@ async fn other_users_rows_are_invisible_and_untouchable() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(nights[0]["stage_seconds"], json!({"deep": 600}), "{nights}");
+    assert_eq!(nights["sessions"][0]["stage_seconds"], json!({"deep": 600}), "{nights}");
 }
 
 #[tokio::test]
@@ -659,8 +659,8 @@ async fn sleep_and_summary() {
     .unwrap();
 
     let nights: Value = serde_json::from_str(&v.sleep_list(p(json!({})), as_user(&a)).await.unwrap()).unwrap();
-    assert_eq!(nights[0]["hours"], 8.0);
-    assert_eq!(nights[0]["stage_seconds"]["deep"], 1800);
+    assert_eq!(nights["sessions"][0]["hours"], 8.0);
+    assert_eq!(nights["sessions"][0]["stage_seconds"]["deep"], 1800);
 
     let s: Value = serde_json::from_str(&v.summary(as_user(&a)).await.unwrap()).unwrap();
     assert_eq!(s["heart_rate"]["latest"]["bpm"], 58);
@@ -690,7 +690,42 @@ async fn stage_seconds(v: &Health, user: &str) -> Value {
         .unwrap(),
     )
     .unwrap();
-    nights[0]["stage_seconds"].clone()
+    nights["sessions"][0]["stage_seconds"].clone()
+}
+
+/// #89: sleep_list stops at 1000 stage segments in total and says so; the per-stage totals stay complete.
+#[tokio::test]
+async fn sleep_list_caps_stage_segments() {
+    let _serial = SLEEP_WRITES.lock().await;
+    let (v, _, _) = setup().await;
+    let a = uid("alice");
+    let start = chrono::DateTime::parse_from_rfc3339("2026-10-02T22:00:00Z").unwrap();
+    let stages: Vec<Value> = (0..1100)
+        .map(|i| json!({"time": (start + chrono::Duration::seconds(10 * i)).to_rfc3339(), "stage": "light", "duration_s": 10}))
+        .collect();
+    v.sleep_add(
+        p(json!({"start_at": "2026-10-02T22:00:00Z", "end_at": "2026-10-03T06:00:00Z", "stages": stages})),
+        as_user(&a),
+    )
+    .await
+    .unwrap();
+    let range = json!({"from": "2026-10-01T00:00:00Z", "to": "2026-10-05T00:00:00Z"});
+    let mut with_stages = range.clone();
+    with_stages["include_stages"] = json!(true);
+    let out: Value = serde_json::from_str(&v.sleep_list(p(with_stages), as_user(&a)).await.unwrap()).unwrap();
+    assert_eq!(out["truncated"], true);
+    assert_eq!(out["sessions"][0]["stages"].as_array().unwrap().len(), 1000);
+    assert_eq!(
+        out["sessions"][0]["stage_seconds"],
+        json!({"light": 11000}),
+        "totals stay complete"
+    );
+    // Without the segments nothing is cut.
+    let out: Value = serde_json::from_str(&v.sleep_list(p(range), as_user(&a)).await.unwrap()).unwrap();
+    assert_eq!(
+        (out["truncated"].clone(), out["sessions"][0]["stages"].clone()),
+        (json!(false), Value::Null)
+    );
 }
 
 #[tokio::test]
@@ -1436,12 +1471,18 @@ async fn app_can_call_every_tool() {
         assert_eq!(s, 200, "{out}");
         let id = out["id"].as_str().unwrap().to_owned();
         let (s, out) = tool(&db, &a, "sleep_list", range.clone()).await;
-        assert_eq!((s, out[0]["stage_seconds"].clone()), (200, json!({"deep": 600})));
+        assert_eq!(
+            (s, out["sessions"][0]["stage_seconds"].clone()),
+            (200, json!({"deep": 600}))
+        );
         let (s, out) = tool(&db, &a, "sleep_update", json!({"id": id, "note": "late"})).await;
         assert_eq!((s, out), (200, json!({"id": id})));
         let (s, out) = tool(&db, &a, "sleep_delete", json!({ "id": id })).await;
         assert_eq!((s, out), (200, json!({"id": id})));
-        assert_eq!(tool(&db, &a, "sleep_list", range).await, (200, json!([])));
+        assert_eq!(
+            tool(&db, &a, "sleep_list", range).await,
+            (200, json!({"truncated": false, "sessions": []}))
+        );
     }
 
     assert_eq!(tool(&db, &a, "nope", json!({})).await.0, 404);

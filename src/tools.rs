@@ -695,7 +695,7 @@ impl Health {
     }
 
     #[tool(
-        description = "List sleep sessions starting in a range (default: last 30 days) with hours and seconds per stage."
+        description = "List sleep sessions starting in a range (default: last 30 days) with hours and seconds per stage. At most 1000 sessions, and with include_stages at most 1000 stage segments in total; truncated = true means narrow the range."
     )]
     pub async fn sleep_list(
         &self,
@@ -705,26 +705,44 @@ impl Health {
         let user = user(&parts)?;
         let (from, to) = range(p.from, p.to);
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
-        sqlx::query_scalar(
-            "SELECT coalesce(json_agg(x ORDER BY x.start_at), '[]')::text FROM (
-               SELECT s.id, s.source, s.start_at, s.end_at, s.note,
-                      round((extract(epoch FROM s.end_at - s.start_at) / 3600)::numeric, 2) AS hours,
-                      (SELECT jsonb_object_agg(stage, total) FROM (
+        // At most MAX_ROWS sessions, and with include_stages at most MAX_ROWS stage segments in total (numbered in
+        // session, then time order), so one call can't flood the model; stage_seconds stays complete per session.
+        let rows: Vec<(String, bool)> = sqlx::query_as(AssertSqlSafe(format!(
+            "WITH sess AS (
+               SELECT * FROM vitals_data.sleep_session
+               WHERE user_id = $4 AND start_at >= $1 AND start_at < $2
+               ORDER BY start_at LIMIT {limit}),
+             stg AS (
+               SELECT g.session_id, g.time, g.stage, g.duration_s,
+                      row_number() OVER (ORDER BY s.start_at, g.time) AS n
+               FROM vitals_data.sleep_stage g JOIN sess s ON s.id = g.session_id
+               WHERE $3 AND g.user_id = $4)
+             SELECT json_build_object(
+                      'id', s.id, 'source', s.source, 'start_at', s.start_at, 'end_at', s.end_at, 'note', s.note,
+                      'hours', round((extract(epoch FROM s.end_at - s.start_at) / 3600)::numeric, 2),
+                      'stage_seconds', (SELECT jsonb_object_agg(stage, total) FROM (
                          SELECT stage, sum(duration_s) AS total FROM vitals_data.sleep_stage
-                         WHERE session_id = s.id GROUP BY stage) q) AS stage_seconds,
-                      CASE WHEN $3 THEN (SELECT json_agg(g ORDER BY g.time) FROM (
-                         SELECT time, stage, duration_s FROM vitals_data.sleep_stage WHERE session_id = s.id) g)
-                      END AS stages
-               FROM vitals_data.sleep_session s
-               WHERE s.user_id = $4 AND s.start_at >= $1 AND s.start_at < $2) x",
-        )
+                         WHERE session_id = s.id AND user_id = $4 GROUP BY stage) q),
+                      'stages', CASE WHEN $3 THEN (
+                         SELECT json_agg(json_build_object('time', time, 'stage', stage, 'duration_s', duration_s)
+                                         ORDER BY time)
+                         FROM stg WHERE stg.session_id = s.id AND stg.n <= {max}) END
+                    )::text,
+                    (SELECT count(*) > {max} FROM stg)
+             FROM sess s ORDER BY s.start_at",
+            limit = MAX_ROWS + 1,
+            max = MAX_ROWS
+        )))
         .bind(from)
         .bind(to)
         .bind(p.include_stages)
         .bind(user)
-        .fetch_one(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(db_err)
+        .map_err(db_err)?;
+        let stages_cut = rows.first().is_some_and(|r| r.1);
+        let rows: Vec<String> = rows.into_iter().map(|r| r.0).collect();
+        Ok(capped_json(&rows, "sessions", stages_cut))
     }
 
     #[tool(
