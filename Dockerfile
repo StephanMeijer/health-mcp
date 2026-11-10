@@ -10,5 +10,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /health-mcp /health-mcp
 EXPOSE 8080
-USER nonroot
+# distroless nonroot, numeric so Kubernetes runAsNonRoot can verify it.
+USER 65532:65532
 ENTRYPOINT ["/health-mcp"]
