@@ -30,6 +30,17 @@ export default defineConfig({
 		expect: { requireAssertions: true },
 		projects: [
 			{
+				// Components, rendered in jsdom with @testing-library/svelte (no browser to download in CI).
+				extends: './vite.config.ts',
+				resolve: { conditions: ['browser'] },
+				test: {
+					name: 'client',
+					environment: 'jsdom',
+					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+					setupFiles: ['./vitest-setup-client.ts']
+				}
+			},
+			{
 				extends: './vite.config.ts',
 				test: {
 					name: 'server',
