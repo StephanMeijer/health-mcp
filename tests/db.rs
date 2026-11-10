@@ -1040,7 +1040,7 @@ async fn ingest_rejects_unsupported_requests() {
         json!({"type": "ecg", "device_id": 1, "time": "2026-10-02T08:00:00Z", "sample_rate": 130, "samples": vec![0; n]})
             .to_string()
     };
-    let max = health_mcp::ingest::MAX_SAMPLES;
+    let max = health_mcp::ingest::MAX_ROWS_PER_BATCH;
     let two = format!("{}\n{}", ecg(max / 2), ecg(max / 2 + 1));
     assert_eq!(
         post_ingest(&db, &a, "application/x-ndjson", None, two.into_bytes())
