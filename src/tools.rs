@@ -56,90 +56,62 @@ impl IntoContents for ToolError {
     }
 }
 
-/// What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type
-/// (migration 0008) with one `value` in a fixed unit.
-#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    HeartRate,
-    Hrv,
-    Weight,
-    BodyFat,
-    Height,
-    Waist,
-    Hip,
-    Neck,
-    MuscleMass,
-    BoneMass,
-    BodyWater,
-    VisceralFat,
-    Spo2,
-    Temperature,
-    Glucose,
-    Systolic,
-    Diastolic,
-    Pulse,
+/// The kinds, each with its name (serde's and `measurement.type`) and unit; one row per kind.
+macro_rules! kinds {
+    ($($variant:ident => $name:literal, $unit:expr,)*) => {
+        /// What a reading is: heart_rate and hrv have their own tables, every other kind is a `measurement` type
+        /// (migration 0008) with one `value` in a fixed unit.
+        #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+        pub enum Kind {
+            $(#[serde(rename = $name)] $variant,)*
+        }
+
+        const KINDS: &[Kind] = &[$(Kind::$variant,)*];
+
+        impl Kind {
+            /// The kind's name as callers write it; for measurement kinds also the `measurement.type`.
+            fn name(self) -> &'static str {
+                match self {
+                    $(Kind::$variant => $name,)*
+                }
+            }
+            /// The unit of a measurement kind, as in `measurement_type`; `None` for kinds with their own table.
+            fn unit(self) -> Option<&'static str> {
+                match self {
+                    $(Kind::$variant => $unit,)*
+                }
+            }
+        }
+    };
 }
 
-const KINDS: [Kind; 18] = [
-    Kind::HeartRate,
-    Kind::Hrv,
-    Kind::Weight,
-    Kind::BodyFat,
-    Kind::Height,
-    Kind::Waist,
-    Kind::Hip,
-    Kind::Neck,
-    Kind::MuscleMass,
-    Kind::BoneMass,
-    Kind::BodyWater,
-    Kind::VisceralFat,
-    Kind::Spo2,
-    Kind::Temperature,
-    Kind::Glucose,
-    Kind::Systolic,
-    Kind::Diastolic,
-    Kind::Pulse,
-];
+kinds! {
+    HeartRate => "heart_rate", None,
+    Hrv => "hrv", None,
+    Weight => "weight", Some("kg"),
+    BodyFat => "body_fat", Some("%"),
+    Height => "height", Some("cm"),
+    Waist => "waist", Some("cm"),
+    Hip => "hip", Some("cm"),
+    Neck => "neck", Some("cm"),
+    MuscleMass => "muscle_mass", Some("kg"),
+    BoneMass => "bone_mass", Some("kg"),
+    BodyWater => "body_water", Some("%"),
+    VisceralFat => "visceral_fat", Some("level"),
+    Spo2 => "spo2", Some("%"),
+    Temperature => "temperature", Some("°C"),
+    Glucose => "glucose", Some("mmol/L"),
+    Systolic => "systolic", Some("mmHg"),
+    Diastolic => "diastolic", Some("mmHg"),
+    Pulse => "pulse", Some("bpm"),
+}
+
+/// `(name, unit)` of every measurement kind, to check against `measurement_type`.
+pub fn measurement_kinds() -> impl Iterator<Item = (&'static str, &'static str)> {
+    KINDS.iter().filter_map(|k| Some((k.name(), k.unit()?)))
+}
 
 impl Kind {
-    /// The kind's name as callers write it; for measurement kinds also the `measurement.type`.
-    fn name(self) -> &'static str {
-        match self {
-            Kind::HeartRate => "heart_rate",
-            Kind::Hrv => "hrv",
-            Kind::Weight => "weight",
-            Kind::BodyFat => "body_fat",
-            Kind::Height => "height",
-            Kind::Waist => "waist",
-            Kind::Hip => "hip",
-            Kind::Neck => "neck",
-            Kind::MuscleMass => "muscle_mass",
-            Kind::BoneMass => "bone_mass",
-            Kind::BodyWater => "body_water",
-            Kind::VisceralFat => "visceral_fat",
-            Kind::Spo2 => "spo2",
-            Kind::Temperature => "temperature",
-            Kind::Glucose => "glucose",
-            Kind::Systolic => "systolic",
-            Kind::Diastolic => "diastolic",
-            Kind::Pulse => "pulse",
-        }
-    }
-    /// The unit of a measurement kind, as in `measurement_type`; `None` for kinds with their own table.
-    fn unit(self) -> Option<&'static str> {
-        match self {
-            Kind::HeartRate | Kind::Hrv => None,
-            Kind::Weight | Kind::MuscleMass | Kind::BoneMass => Some("kg"),
-            Kind::BodyFat | Kind::BodyWater | Kind::Spo2 => Some("%"),
-            Kind::Height | Kind::Waist | Kind::Hip | Kind::Neck => Some("cm"),
-            Kind::VisceralFat => Some("level"),
-            Kind::Temperature => Some("°C"),
-            Kind::Glucose => Some("mmol/L"),
-            Kind::Systolic | Kind::Diastolic => Some("mmHg"),
-            Kind::Pulse => Some("bpm"),
-        }
-    }
     fn table(self) -> &'static str {
         match self.unit() {
             Some(_) => "measurement",
@@ -1178,6 +1150,28 @@ mod tests {
         assert_eq!(sql_err(sqlx::Error::PoolTimedOut), ToolError::Retry);
     }
     use serde_json::json;
+
+    /// The texts the AI reads list every kind, and each measurement kind in a "names unit" group.
+    #[test]
+    fn docs_list_every_kind_with_its_unit() {
+        let tools = Health::tool_list();
+        let add = tools.iter().find(|t| t.name == "reading_add").unwrap();
+        for (doc, text) in [
+            ("SCHEMA_DOC", SCHEMA_DOC),
+            ("reading_add", add.description.as_deref().unwrap()),
+        ] {
+            let groups: Vec<&str> = text.split([';', '.', '\n']).map(str::trim_end).collect();
+            let has = |g: &str, name: &str| g.split([' ', ',', ':']).any(|w| w == name);
+            for k in KINDS {
+                let (name, unit) = (k.name(), k.unit());
+                assert!(groups.iter().any(|g| has(g, name)), "{doc} misses {name}");
+                if let Some(unit) = unit {
+                    let listed = groups.iter().any(|g| has(g, name) && g.ends_with(&format!(" {unit}")));
+                    assert!(listed, "{doc} misses {name} with unit {unit}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn flattened_reading_keeps_time_out_of_unknown() {

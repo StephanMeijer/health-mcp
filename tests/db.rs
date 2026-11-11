@@ -1892,3 +1892,17 @@ async fn app_gets_the_tool_schemas() {
         assert!(matches!(s, 200 | 400), "{name}: expected 200 or 400, got {s}: {out}");
     }
 }
+
+#[tokio::test]
+async fn measurement_kinds_match_measurement_type() {
+    let (_, _, owner) = setup().await;
+    let db: std::collections::BTreeSet<(String, String)> =
+        sqlx::query_as("SELECT name, unit FROM vitals_data.measurement_type")
+            .fetch_all(&owner)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+    let rust = measurement_kinds().map(|(n, u)| (n.to_owned(), u.to_owned())).collect();
+    assert_eq!(db, rust);
+}
