@@ -374,3 +374,83 @@ async fn edit_delete_and_resolve_rules() {
     .await;
     assert!(e.contains("only whoever started"), "{e}");
 }
+
+#[tokio::test]
+async fn can_resolve_follows_starter_and_owner() {
+    let db = db(None).await;
+    let o = owner_with_data(&db).await;
+    let (workout, _) = ids(&db, &o).await;
+    let (trainer, partner) = (person("trainer"), person("partner"));
+    share(&db, &o, &trainer, "ro", "none").await;
+    share(&db, &o, &partner, "ro", "none").await;
+
+    let t = ok(
+        &db,
+        &trainer,
+        "thread_start",
+        with_owner(&o, json!({"target": "workout", "id": workout, "body": "Good session"})),
+    )
+    .await;
+    assert_eq!(t["can_resolve"], true, "the starter");
+    let args = json!({"target": "workout", "id": workout});
+    let mine = ok(&db, &o, "comment_list", args.clone()).await;
+    assert_eq!(mine[0]["can_resolve"], true, "the owner");
+    let theirs = ok(&db, &partner, "comment_list", with_owner(&o, args)).await;
+    assert_eq!(theirs[0]["can_resolve"], false, "another ro user");
+}
+
+#[tokio::test]
+async fn workout_scope_includes_its_sets() {
+    let db = db(None).await;
+    let o = owner_with_data(&db).await;
+    let (workout, set) = ids(&db, &o).await;
+    let other = ok(
+        &db,
+        &o,
+        "workout_add_past",
+        json!({"gym": "Home", "started_at": "2026-10-03T18:00:00Z", "finished_at": "2026-10-03T19:00:00Z"}),
+    )
+    .await["workout_id"]
+        .as_i64()
+        .unwrap();
+    let mut want = Vec::new();
+    for (target, id) in [("workout", workout), ("set", set)] {
+        let t = ok(
+            &db,
+            &o,
+            "thread_start",
+            json!({"target": target, "id": id, "body": "hi"}),
+        )
+        .await;
+        want.push(t["thread_id"].clone());
+    }
+    ok(
+        &db,
+        &o,
+        "thread_start",
+        json!({"target": "workout", "id": other, "body": "elsewhere"}),
+    )
+    .await;
+    ok(
+        &db,
+        &o,
+        "thread_start",
+        json!({"target": "exercise", "exercise": "Squat", "body": "elsewhere"}),
+    )
+    .await;
+
+    let got = ok(&db, &o, "comment_list", json!({"workout_id": workout})).await;
+    let mut got: Vec<Value> = got.as_array().unwrap().iter().map(|t| t["thread_id"].clone()).collect();
+    got.reverse(); // newest first
+    assert_eq!(got, want);
+    let sets = ok(&db, &o, "comment_list", json!({"workout_id": workout, "target": "set"})).await;
+    assert_eq!(sets.as_array().unwrap().len(), 1);
+    let e = err(
+        &db,
+        &o,
+        "comment_list",
+        json!({"workout_id": workout, "target": "set", "id": set}),
+    )
+    .await;
+    assert!(e.contains("not both"), "{e}");
+}

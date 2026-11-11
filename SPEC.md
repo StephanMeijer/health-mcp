@@ -409,7 +409,9 @@ Read-only gym access is enough to comment on purpose: a trainer who only reads t
 feedback, and commenting doesn't change the logbook. `act_as` checks it through `Scope::Comment` (gym, at least `ro`),
 whatever the tools' `read_only_hint`. Because `act_as` makes the owner the tool's user, it also passes the real caller
 (`Author`) on, and comments are stored with that. A deleted comment keeps its place with an empty body; replying to a
-resolved thread reopens it. Tools: `thread_start`, `comment_reply`, `comment_list`, `comment_update`, `comment_delete`,
+resolved thread reopens it. Each thread carries `can_resolve` (the caller started it or owns the logbook), and
+`comment_list{workout_id}` returns a workout's own threads plus those on its sets in one list (not combined with `id`;
+with `target`, only that kind), so the app gets every set's threads in one call. Tools: `thread_start`, `comment_reply`, `comment_list`, `comment_update`, `comment_delete`,
 `thread_resolve`. `sql_query` sees them through `vitals.comment_thread` and `vitals.comment`, filtered on the gym domain.
 
 ## Sharing

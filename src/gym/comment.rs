@@ -31,7 +31,8 @@ impl Target {
 }
 
 /// Threads of `$1` (owner) as a JSON array, newest first, each with its comments oldest first. `$2` is the author,
-/// for `yours`. Filters: `$3` target, `$4` target id, `$5` include resolved, `$6` limit, `$7` one thread.
+/// for `yours` and `can_resolve` (the thread's starter or the owner). Filters: `$3` target, `$4` target id, `$5` include
+/// resolved, `$6` limit, `$7` one thread, `$8` a workout's own threads plus those on its sets.
 const THREADS: &str = "
 SELECT coalesce(json_agg(j ORDER BY created_at DESC, id DESC), '[]'::json) FROM (
   SELECT t.id, t.created_at, json_build_object(
@@ -40,6 +41,7 @@ SELECT coalesce(json_agg(j ORDER BY created_at DESC, id DESC), '[]'::json) FROM 
     'exercise', (SELECT e.name FROM exercise e
                  WHERE e.id = coalesce(t.exercise_id, (SELECT s.exercise_id FROM workout_set s WHERE s.id = t.set_id))),
     'resolved', t.resolved_at IS NOT NULL, 'resolved_at', t.resolved_at, 'created_at', t.created_at,
+    'can_resolve', t.started_by_sub = $2 OR t.owner_sub = $2,
     'comments', (SELECT json_agg(json_build_object(
         'id', c.id, 'author', c.author_email, 'by_owner', c.author_sub = t.owner_sub, 'yours', c.author_sub = $2,
         'body', CASE WHEN c.deleted_at IS NULL THEN c.body END, 'deleted', c.deleted_at IS NOT NULL,
@@ -51,6 +53,8 @@ SELECT coalesce(json_agg(j ORDER BY created_at DESC, id DESC), '[]'::json) FROM 
     AND ($4::bigint IS NULL OR coalesce(t.workout_id, t.exercise_id, t.set_id) = $4)
     AND ($5 OR $7::bigint IS NOT NULL OR t.resolved_at IS NULL)
     AND ($7::bigint IS NULL OR t.id = $7)
+    AND ($8::bigint IS NULL OR t.workout_id = $8
+         OR t.set_id IN (SELECT s.id FROM workout_set s WHERE s.workout_id = $8))
   ORDER BY t.created_at DESC, t.id DESC
   LIMIT $6) x";
 
@@ -62,6 +66,7 @@ struct Filter {
     include_resolved: bool,
     limit: i64,
     thread: Option<i64>,
+    workout: Option<i64>,
 }
 
 async fn threads(tx: &mut Tx, owner: &str, author: &Author, f: Filter) -> AppResult<Value> {
@@ -73,6 +78,7 @@ async fn threads(tx: &mut Tx, owner: &str, author: &Author, f: Filter) -> AppRes
         .bind(f.include_resolved)
         .bind(f.limit)
         .bind(f.thread)
+        .bind(f.workout)
         .fetch_one(&mut **tx)
         .await?)
 }
@@ -207,6 +213,8 @@ pub struct CommentListArgs {
     pub include_resolved: bool,
     /// Most threads returned, newest first. Default 20, at most 100.
     pub limit: Option<i64>,
+    /// The threads about this workout and about its sets, in one list. Not with `id`; with target, only that kind.
+    pub workout_id: Option<i64>,
 }
 
 pub async fn comment_list(app: &App, owner: &str, author: &Author, a: CommentListArgs) -> AppResult<Value> {
@@ -215,6 +223,9 @@ pub async fn comment_list(app: &App, owner: &str, author: &Author, a: CommentLis
             "give the target (workout, exercise or set) that id belongs to",
         ));
     }
+    if a.id.is_some() && a.workout_id.is_some() {
+        return Err(user_err("give either id or workout_id, not both"));
+    }
     let mut tx = db::begin_read(app, owner).await?;
     let filter = Filter {
         target: a.target,
@@ -222,6 +233,7 @@ pub async fn comment_list(app: &App, owner: &str, author: &Author, a: CommentLis
         include_resolved: a.include_resolved,
         limit: a.limit.unwrap_or(20).clamp(1, 100),
         thread: None,
+        workout: a.workout_id,
     };
     let v = threads(&mut tx, owner, author, filter).await?;
     tx.commit().await?;

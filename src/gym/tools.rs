@@ -488,7 +488,7 @@ impl Health {
     }
 
     #[tool(
-        description = "Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved.",
+        description = "Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), a workout together with its sets (workout_id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved. can_resolve says whether you may resolve or reopen a thread.",
         annotations(title = "List comments", read_only_hint = true, open_world_hint = false)
     )]
     async fn comment_list(&self, p: P, a: Parameters<CommentListArgs>) -> R {

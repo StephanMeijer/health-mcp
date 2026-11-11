@@ -203,7 +203,7 @@ export interface CommentDeleteArgs {
 	owner?: string;
 }
 /**
- * Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved.
+ * Comment threads with their comments, newest thread first: about one workout, exercise or set (target + id), a workout together with its sets (workout_id), all of one kind (target), or the latest overall. Resolved threads only with include_resolved. can_resolve says whether you may resolve or reopen a thread.
  */
 export interface CommentListArgs {
 	id?: number | null;
@@ -223,6 +223,10 @@ export interface CommentListArgs {
 	 * Only threads about this kind of thing. With `id`, about that one workout, exercise or set.
 	 */
 	target?: Target | null;
+	/**
+	 * The threads about this workout and about its sets, in one list. Not with `id`; with target, only that kind.
+	 */
+	workout_id?: number | null;
 }
 /**
  * Reply in a comment thread. Replying to a resolved thread reopens it.
