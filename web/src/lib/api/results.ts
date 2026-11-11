@@ -163,3 +163,28 @@ export type Summary = Record<
 		stage_pct_30d: Partial<Record<Stage, number>> | null;
 	};
 };
+
+/** progress (src/gym/search.rs, progress). With an exercise, one row per bucket and machine/variant setup. */
+export interface Progress {
+	bucket: 'day' | 'week' | 'month';
+	series: { period_start: string; machine: string | null; variant: string | null; value: number }[];
+}
+
+type SetRecord = {
+	weight_kg: number;
+	reps: number;
+	performed_at: string;
+	set_id: number;
+	workout_id: number;
+};
+
+/** personal_records, one row per exercise and setup (src/gym/search.rs, personal_records). Cardio records left out. */
+export interface PersonalRecord {
+	exercise: string;
+	machine: string | null;
+	variant: string | null;
+	heaviest_set: SetRecord | null;
+	best_e1rm: (SetRecord & { e1rm_kg: number }) | null;
+	max_reps_by_weight_kg: { weight_kg: number; reps: number }[] | null;
+	best_volume_workout: { volume_kg: number; workout_id: number; date: string } | null;
+}

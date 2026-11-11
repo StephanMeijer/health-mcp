@@ -368,6 +368,11 @@ async fn search_records_and_overview(pool: PgPool) {
         .unwrap();
     assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 140.0);
     assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 140.0); // 140*(1+8/30)=177.3 > 120*(1+10/30)=160
+    assert_eq!(
+        pr[0]["heaviest_set"]["workout_id"],
+        pr[0]["best_volume_workout"]["workout_id"]
+    );
+    assert!(pr[0]["best_e1rm"]["workout_id"].is_i64());
     assert_eq!(pr[0]["best_volume_workout"]["volume_kg"], 3520.0);
     let reps = pr[0]["max_reps_by_weight_kg"].as_array().unwrap();
     let weights: Vec<f64> = reps.iter().map(|r| r["weight_kg"].as_f64().unwrap()).collect();
