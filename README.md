@@ -108,8 +108,10 @@ pg_dump leaves out the generated search columns and resets the id sequences. gym
 ### Upgrade and rollback
 
 With `DATABASE_OWNER_URL` set, the server runs every pending migration in `migrations/` when it starts, before it
-serves anything. There are no down migrations: once a new version has started, its migrations stay applied, and an
-older image may no longer work with the database. Rolling back the image alone is therefore not a rollback.
+serves anything. There are no down migrations: once a new version has started, its migrations stay applied. An older
+image with `DATABASE_OWNER_URL` set then refuses to start (`migration N was previously applied but is missing in the
+resolved migrations`), and without it, it fails as soon as it touches a table that changed. Rolling back the image
+alone is therefore not a rollback.
 
 **Before upgrading** to a release that adds a file to `migrations/`, back up the whole database: a volume snapshot
 with Postgres stopped, or a dump as the owner:
@@ -122,22 +124,26 @@ Dump the whole database, not single schemas. It must include `vitals_private.sec
 user id with for every `sql_query` (without it, every `sql_query` fails), and `_sqlx_migrations`, the record of applied
 migrations (without it, the next start runs migration 0001 again and fails). `pg_dump` may print errors about
 TimescaleDB's catalog; Timescale says these can usually be ignored. Roles are not in the dump: restore into a cluster
-that already has `vitals_app`, `vitals_reader` and your importer roles.
+that already has the owner role (the user in `DATABASE_OWNER_URL`), `vitals_app`, `vitals_reader` and your importer
+roles. The dump records that owner on every object, so later migrations, which run as the owner, can still change them.
 
 **Rolling back:** stop the server, restore the backup, and start the previous image. Anything written after the backup
-is lost; the phones resend only what is still in their 7-day outbox. Restore a dump into an empty database, following
-Timescale's steps ([logical backup](https://www.tigerdata.com/docs/self-hosted/latest/backup-and-restore/logical-backup)):
+is lost for good, including what the phones uploaded: a phone deletes frames from its outbox once the server has
+answered `200`, so only frames it never got a `200` for are sent again. Restore a dump into an empty database as a
+superuser (`timescaledb_pre_restore()` needs one) and without `--no-owner`, so the objects stay owned by the owner
+role. Follow Timescale's steps ([logical backup](https://www.tigerdata.com/docs/self-hosted/latest/backup-and-restore/logical-backup)):
 
 ```sh
-psql "$EMPTY_DB_OWNER" -c 'CREATE EXTENSION IF NOT EXISTS timescaledb' -c 'SELECT timescaledb_pre_restore()'
-pg_restore -Fc -d "$EMPTY_DB_OWNER" health.dump   # no -j: it doesn't restore TimescaleDB's catalog correctly
-psql "$EMPTY_DB_OWNER" -c 'SELECT timescaledb_post_restore()'
+psql "$EMPTY_DB_SUPERUSER" -c 'CREATE EXTENSION IF NOT EXISTS timescaledb' -c 'SELECT timescaledb_pre_restore()'
+pg_restore -Fc -d "$EMPTY_DB_SUPERUSER" health.dump   # no -j: it doesn't restore TimescaleDB's catalog correctly
+psql "$EMPTY_DB_SUPERUSER" -c 'SELECT timescaledb_post_restore()'
 ```
 
 Restore on the same PostgreSQL and TimescaleDB versions you dumped from, then point the `DATABASE_*` URLs at that database.
 
 **Skipping migrations:** leave `DATABASE_OWNER_URL` unset; the server then starts without touching the schema. It
-fails at runtime if the schema is behind, so run the new version once with the owner URL when you're ready.
+fails at runtime if the schema is behind, so run the new version once with the owner URL when you're ready. Leaving it
+unset is no way to run an older image on a newer schema: restore the backup instead.
 
 **Migrations that change data for good** (the version that first shipped them in brackets):
 
