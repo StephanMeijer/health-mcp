@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/StephanMeijer/health-mcp/compare/v0.7.3...v0.7.4) - 2026-11-11
+
+### Added
+
+- *(web)* comment on workouts, sets and exercises in threads
+- *(web)* zoom into a day of heart rate, ECG and movement on insights
+- *(comments)* can_resolve on threads and comment_list by workout_id
+- *(web)* see weekly volume, HRV, a training calendar and a body map on insights
+- *(gym)* workout_get and body notes per workout for the workout page
+- *(web)* log, browse and fix workouts and sets in the browser
+- *(web)* chart strength progress and personal records on insights
+
+### Fixed
+
+- *(web)* explain a share without gym data on the volume tab and keep empty weeks in the HRV chart
+- *(web)* say when a heart rate window is cut short and keep raw windows under the row cap
+- *(web)* exact distances, whole-number fields, refusals and start-minute sets on the workout page
+- *(web)* group progress lines by the server's case-insensitive setup key
+
+### Other
+
+- Merge pull request #141 from StephanMeijer/feat/web-volume
+- Merge pull request #139 from StephanMeijer/feat/web-charts
+- *(comments)* comment_list by workout_id never shows another user's threads
+
 ## [0.7.3](https://github.com/StephanMeijer/health-mcp/compare/v0.7.2...v0.7.3) - 2026-11-10
 
 ### Added
