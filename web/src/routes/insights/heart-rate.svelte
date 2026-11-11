@@ -29,6 +29,8 @@
 	import { logbook } from '#lib/logbook.svelte.js';
 
 	const MIN_SPAN = 2;
+	// sql_query stops at 1000 rows: only when devices overlap, since windows are sized below that.
+	const TRUNCATED = 'Too many readings in this window, so the chart stops early. Zoom in further.';
 	const today = isoDay(new Date());
 	let day = $state(today);
 	let bounds = $derived(dayBounds(day));
@@ -156,8 +158,8 @@
 			<Card.Header>
 				<Card.Title>Heart rate through the day</Card.Title>
 				<Card.Description>
-					Drag across the chart, or use the buttons, to zoom in. Under 15 minutes you see every
-					reading, plus the ECG and movement below.
+					Drag across the chart, or use the buttons, to zoom in. Under 15 minutes you see it second
+					by second, plus the ECG and movement below.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="grid gap-4">
@@ -220,6 +222,7 @@
 							label="Heart rate in beats per minute, {time(view[0])} to {time(view[1])}"
 						/>
 					</div>
+					{#if hr.data.truncated}<p class="text-sm text-muted-foreground">{TRUNCATED}</p>{/if}
 				{/if}
 			</Card.Content>
 		</Card.Root>
@@ -252,6 +255,7 @@
 								label="{s.title}, {time(view[0])} to {time(view[1])}"
 							/>
 						</div>
+						{#if s.q.data.truncated}<p class="text-sm text-muted-foreground">{TRUNCATED}</p>{/if}
 					{/if}
 				</Card.Content>
 			</Card.Root>

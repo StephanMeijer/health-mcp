@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { bucketFor, keysFor, stepText, toColumns, windowSql } from './heart-rate.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { bucketFor, dayBounds, keysFor, stepText, toColumns, windowSql } from './heart-rate.js';
 import { uplotTheme } from './theme.js';
 
 describe('bucketFor', () => {
@@ -9,13 +9,18 @@ describe('bucketFor', () => {
 		expect(bucketFor('heart_rate', 90_000)).toBe(120);
 	});
 
-	it('switches to raw samples once the window is short enough for each signal', () => {
-		expect(bucketFor('heart_rate', 15 * 60)).toBe(0);
-		expect(bucketFor('heart_rate', 15 * 60 + 1)).toBe(2);
+	it('switches to raw samples once the window is short enough for ECG and movement', () => {
 		expect(bucketFor('ecg', 7)).toBe(0);
 		expect(bucketFor('ecg', 8)).toBe(0.01);
-		expect(bucketFor('acc', 5)).toBe(0);
-		expect(bucketFor('acc', 6)).toBe(0.01);
+		// 4 s × 200 Hz = 800 rows: room under the cap.
+		expect(bucketFor('acc', 4)).toBe(0);
+		expect(bucketFor('acc', 5)).toBe(0.01);
+	});
+
+	it('averages heart rate per second at the finest, so overlapping sources fit', () => {
+		expect(bucketFor('heart_rate', 15 * 60)).toBe(1);
+		expect(bucketFor('heart_rate', 15 * 60 + 1)).toBe(2);
+		expect(bucketFor('heart_rate', 2)).toBe(1);
 	});
 
 	it('keeps every window under 1000 rows', () => {
@@ -23,6 +28,8 @@ describe('bucketFor', () => {
 			const step = bucketFor('ecg', span);
 			expect(span / step).toBeLessThan(1000);
 		}
+		for (const span of [2, 600, 900, 3600, 90_000])
+			expect(span / bucketFor('heart_rate', span)).toBeLessThan(1000);
 	});
 });
 
@@ -35,8 +42,9 @@ describe('windowSql', () => {
 	});
 
 	it('reads raw samples of every axis in a short window', () => {
+		// No LIMIT of its own: sql_query's cap then reports `truncated`.
 		expect(windowSql('acc', 10, 14)).toBe(
-			'SELECT extract(epoch FROM time)::float8 AS t, x, y, z FROM acc WHERE time >= to_timestamp(10) AND time < to_timestamp(14) ORDER BY time LIMIT 1000'
+			'SELECT extract(epoch FROM time)::float8 AS t, x, y, z FROM acc WHERE time >= to_timestamp(10) AND time < to_timestamp(14) ORDER BY time'
 		);
 	});
 });
@@ -81,4 +89,20 @@ it('reads uPlot colours from the theme tokens', () => {
 	const theme = uplotTheme((n) => (n === '--chart-1' ? 'hsl(1 2% 3%)' : '#000'));
 	expect(theme.colors[0]).toBe('hsl(1, 2%, 3%)');
 	expect(theme.axis.grid.stroke).toBe('#000');
+});
+
+describe('dayBounds', () => {
+	const tz = process.env.TZ;
+	afterEach(() => {
+		process.env.TZ = tz;
+	});
+
+	it('spans 23 and 25 hours on DST days in the browser’s time zone', () => {
+		process.env.TZ = 'Europe/Amsterdam';
+		const span = (day: string) => dayBounds(day)[1] - dayBounds(day)[0];
+		expect(span('2026-03-29')).toBe(82_800);
+		expect(span('2026-10-25')).toBe(90_000);
+		expect(span('2026-11-11')).toBe(86_400);
+		expect(dayBounds('2026-11-11')[0]).toBe(Date.UTC(2026, 10, 10, 23) / 1000);
+	});
 });

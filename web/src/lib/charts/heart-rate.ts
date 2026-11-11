@@ -1,8 +1,10 @@
 /** The vitals views the heart rate tab reads (src/tools.rs SCHEMA_DOC) and their value columns. */
+// rawUpTo leaves room under the 1000-row cap: ECG 7 s × 130 Hz = 910, acc 4 s × 200 Hz = 800. Heart rate is never
+// raw: several sources (strap, watch, imports) can overlap, so it is averaged per second at the finest.
 export const SIGNALS = {
-	heart_rate: { columns: ['bpm'], rawUpTo: 15 * 60, gap: 30 },
-	ecg: { columns: ['uv'], rawUpTo: 7, gap: 0.5 }, // 130 Hz
-	acc: { columns: ['x', 'y', 'z'], rawUpTo: 5, gap: 0.5 } // 200 Hz
+	heart_rate: { columns: ['bpm'], rawUpTo: 0, minStep: 1, gap: 30 },
+	ecg: { columns: ['uv'], rawUpTo: 7, minStep: 0, gap: 0.5 }, // 130 Hz
+	acc: { columns: ['x', 'y', 'z'], rawUpTo: 4, minStep: 0, gap: 0.5 } // 200 Hz
 } as const;
 export type Signal = keyof typeof SIGNALS;
 
@@ -17,8 +19,9 @@ const STEPS = [
 
 /** Seconds per bucket for a window of `span` seconds: 0 means raw samples. A whole day gets 2 minutes. */
 export function bucketFor(signal: Signal, span: number) {
-	if (span <= SIGNALS[signal].rawUpTo) return 0;
-	return STEPS.find((s) => span / s <= MAX_POINTS) ?? STEPS[STEPS.length - 1];
+	const { rawUpTo, minStep } = SIGNALS[signal];
+	if (span <= rawUpTo) return 0;
+	return STEPS.find((s) => s >= minStep && span / s <= MAX_POINTS) ?? STEPS[STEPS.length - 1];
 }
 
 /**
@@ -30,7 +33,7 @@ export function windowSql(signal: Signal, from: number, to: number) {
 	const step = bucketFor(signal, to - from);
 	const where = `FROM ${signal} WHERE time >= to_timestamp(${from}) AND time < to_timestamp(${to})`;
 	if (!step)
-		return `SELECT extract(epoch FROM time)::float8 AS t, ${columns.join(', ')} ${where} ORDER BY time LIMIT 1000`;
+		return `SELECT extract(epoch FROM time)::float8 AS t, ${columns.join(', ')} ${where} ORDER BY time`;
 	// The same columns as keysFor().
 	const values = columns.map((c) => `avg(${c})::float8 AS ${c}`);
 	if (columns.length === 1)
@@ -75,8 +78,8 @@ export function toColumns(rows: Row[], keys: string[], gap: number) {
 	return cols;
 }
 
-/** The gap that breaks a line: a missing bucket, or for raw samples the signal's own. */
-export const gapFor = (signal: Signal, step: number) => (step ? step * 1.5 : SIGNALS[signal].gap);
+/** The gap that breaks a line: a missing bucket, but never shorter than the signal's own dropout. */
+export const gapFor = (signal: Signal, step: number) => Math.max(step * 1.5, SIGNALS[signal].gap);
 
 /** Local midnight to the next local midnight of a `YYYY-MM-DD` day, in epoch seconds (23 or 25 hours on DST days). */
 export function dayBounds(day: string): [number, number] {
