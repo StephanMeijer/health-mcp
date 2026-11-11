@@ -80,16 +80,16 @@ impl Db {
         }
     }
 
-    /// Readiness: both pools reach the database within 2 s. Checks reachability, not free capacity: an idle
-    /// connection runs `SELECT 1`; when every connection is busy, those open connections count as reachable; only an
-    /// empty pool connects.
+    /// Readiness: both pools reach the database within 2 s. Checks reachability, not free capacity: when every
+    /// connection is busy, those open connections count as reachable; otherwise the pool runs `SELECT 1`. The pool
+    /// tests an idle connection before handing it out and replaces a dead one (sqlx's `test_before_acquire`, on by
+    /// default), so dead connections left by a database restart don't keep this false.
     pub async fn ready(&self) -> bool {
         async fn ping(pool: &PgPool) -> sqlx::Result<()> {
-            match pool.try_acquire() {
-                Some(mut conn) => sqlx::query("SELECT 1").execute(&mut *conn).await.map(drop),
-                None if pool.size() > 0 => Ok(()),
-                None => sqlx::query("SELECT 1").execute(pool).await.map(drop),
+            if pool.size() > 0 && pool.num_idle() == 0 {
+                return Ok(());
             }
+            sqlx::query("SELECT 1").execute(pool).await.map(drop)
         }
         let ping = async {
             ping(&self.app).await?;
