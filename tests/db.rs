@@ -92,6 +92,60 @@ async fn ready_while_every_connection_is_busy() {
 }
 
 #[tokio::test]
+async fn ready_right_after_the_backends_die() {
+    let (_, db, owner) = setup().await;
+    // A name of our own, so terminating backends can't hit other tests' connections.
+    let name = uid("ready-test");
+    let pool = |options: sqlx::postgres::PgPoolOptions, var: &str, default: &str| {
+        let connect = url(var, default).parse::<sqlx::postgres::PgConnectOptions>().unwrap();
+        options
+            .max_connections(3)
+            .connect_lazy_with(connect.application_name(&name))
+    };
+    let db = Db {
+        app: pool(
+            sqlx::postgres::PgPoolOptions::new(),
+            "TEST_APP_URL",
+            "postgres://vitals_app:app@localhost:55432/health",
+        ),
+        reader: pool(
+            health_mcp::db::reader_pool_options(),
+            "TEST_READER_URL",
+            "postgres://vitals_reader:reader@localhost:55432/health",
+        ),
+        ..db
+    };
+    for pool in [&db.app, &db.reader] {
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(pool.acquire().await.unwrap());
+        }
+        drop(held);
+        while pool.num_idle() < 3 {
+            tokio::task::yield_now().await;
+        }
+    }
+    let killed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1) t",
+    )
+    .bind(&name)
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+    assert_eq!(killed, 6);
+    while sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE application_name = $1")
+        .bind(&name)
+        .fetch_one(&owner)
+        .await
+        .unwrap()
+        > 0
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(db.ready().await, "dead idle connections are replaced, not reported");
+}
+
+#[tokio::test]
 async fn sql_query_caps_output_bytes() {
     let (v, _, _) = setup().await;
     let a = uid("alice");
