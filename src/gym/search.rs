@@ -634,12 +634,12 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
             WHERE w.owner_sub = $1 AND s.set_type = 'working' AND ($2::bigint IS NULL OR s.exercise_id = $2)),
          heaviest AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
-                   json_build_object('weight_kg', {LOAD}, 'reps', reps, 'performed_at', performed_at, 'set_id', id) AS r
+                   json_build_object('weight_kg', {LOAD}, 'reps', reps, 'performed_at', performed_at, 'set_id', id, 'workout_id', workout_id) AS r
             FROM mine s WHERE weight_kg IS NOT NULL ORDER BY exercise_id, machine_key, {LOAD} DESC, reps DESC NULLS LAST, performed_at),
          best_e1rm AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('e1rm_kg', round({E1RM}::numeric, 1), 'weight_kg', {LOAD}, 'reps', reps,
-                                     'performed_at', performed_at, 'set_id', id) AS r
+                                     'performed_at', performed_at, 'set_id', id, 'workout_id', workout_id) AS r
             FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, machine_key, {E1RM} DESC, performed_at),
          reps_at AS (
             SELECT exercise_id, machine_key, json_agg(json_build_object('weight_kg', weight_kg, 'reps', best) ORDER BY weight_kg) AS r
