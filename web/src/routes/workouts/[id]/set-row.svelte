@@ -83,7 +83,7 @@
 	);
 </script>
 
-<li class="grid gap-1 py-2">
+<li id="set-{set.set_id}" class="grid scroll-mt-20 gap-1 py-2">
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
 		{#if editable}
 			<Checkbox

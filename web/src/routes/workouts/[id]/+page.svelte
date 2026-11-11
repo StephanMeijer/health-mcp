@@ -42,6 +42,7 @@
 	} from '#lib/workouts.js';
 	import SetRow from './set-row.svelte';
 	import AddSets from './add-sets.svelte';
+	import WorkoutCharts from './workout-charts.svelte';
 
 	let id = $derived(Number(page.params.id));
 	const found = toolQuery<Workout, 'workout_get'>('workout_get', () => ({ workout_id: id }));
@@ -256,6 +257,12 @@
 					: 'Sets show up here, grouped by exercise, once they are logged.'}
 			/>
 		{:else}
+			<details open class="group grid gap-4">
+				<summary class="cursor-pointer text-lg font-semibold marker:text-muted-foreground"
+					>Overview</summary
+				>
+				<div class="mt-4"><WorkoutCharts workout={w} /></div>
+			</details>
 			{#each w.exercises as ex (ex.exercise_id)}
 				<section class="grid gap-1" aria-labelledby="ex-{ex.exercise_id}">
 					<h2 id="ex-{ex.exercise_id}" class="font-semibold">

@@ -11,6 +11,9 @@ vi.mock('#lib/api/client.js', async (orig) => ({
 	tool: vi.fn()
 }));
 vi.mock('$app/state', () => ({ page: { params: { id: '4' } } }));
+vi.mock('#lib/charts/echart.svelte', async () => ({
+	default: (await import('#lib/test/echart-stub.svelte')).default
+}));
 vi.mock('$app/paths', () => ({ resolve: (p: string) => `/app${p}` }));
 
 const mocked = vi.mocked(tool);
