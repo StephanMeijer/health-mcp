@@ -274,3 +274,26 @@ export interface PersonalRecord {
 	max_reps_by_weight_kg: { weight_kg: number; reps: number }[] | null;
 	best_volume_workout: { volume_kg: number; workout_id: number; date: string } | null;
 }
+
+/** muscle_group_volume (src/gym/search.rs, muscle_volume): weighted sets, primary 1 and secondary 0.5. */
+export interface MuscleGroupVolume {
+	from: string;
+	to: string;
+	days: number;
+	muscle_groups: {
+		muscle_group: string;
+		sets: number;
+		reps: number;
+		sets_per_week: number;
+		exercises: number;
+		train_days: number;
+		avg_rpe: number | null;
+		days_since: number | null;
+	}[];
+}
+
+/** sql_query (src/tools.rs): one object per row, at most 1000. */
+export interface SqlRows<T> {
+	truncated: boolean;
+	rows: T[];
+}

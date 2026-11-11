@@ -18,7 +18,7 @@ export function chartTheme(read: TokenReader) {
 		nameTextStyle: { color: t('muted-foreground') }
 	};
 	return {
-		color: [1, 2, 3, 4, 5].map((i) => t(`chart-${i}`)),
+		color: [1, 2, 3, 4, 5, 6, 7].map((i) => t(`chart-${i}`)),
 		backgroundColor: 'transparent',
 		textStyle: { color: t('foreground'), fontFamily: 'Inter Variable, system-ui, sans-serif' },
 		legend: { textStyle: { color: t('foreground') } },
@@ -26,6 +26,18 @@ export function chartTheme(read: TokenReader) {
 			backgroundColor: t('popover'),
 			borderColor: t('border'),
 			textStyle: { color: t('popover-foreground') }
+		},
+		// Calendar heatmap: empty days as muted squares, more sets darker (visualMap lists high first).
+		visualMap: {
+			color: [t('chart-1'), t('secondary')],
+			textStyle: { color: t('muted-foreground') }
+		},
+		calendar: {
+			itemStyle: { color: t('muted'), borderColor: t('card'), borderWidth: 2 },
+			splitLine: { show: false },
+			dayLabel: { color: t('muted-foreground') },
+			monthLabel: { color: t('muted-foreground') },
+			yearLabel: { show: false }
 		},
 		categoryAxis: axis,
 		valueAxis: axis,

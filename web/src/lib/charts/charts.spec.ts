@@ -84,5 +84,7 @@ describe('chart theme', () => {
 		expect(theme.color[4]).toBe('hsl(5, 5%, 5%)');
 		expect(theme.textStyle.color).toBe('hsl(0, 0%, 10%)');
 		expect(theme.valueAxis.axisLabel.color).toBe('hsl(0, 0%, 40%)');
+		// The calendar heatmap's scale runs from the strongest series colour down.
+		expect(theme.visualMap.color[0]).toBe('hsl(1, 2%, 3%)');
 	});
 });
