@@ -3,6 +3,7 @@
 	import PageHeader from '#lib/components/page-header.svelte';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import Strength from './strength.svelte';
+	import Volume from './volume.svelte';
 </script>
 
 <PageHeader title="Insights" description="How your training and body change over time." />
@@ -16,12 +17,7 @@
 	</Tabs.List>
 
 	<Tabs.Content value="strength"><Strength /></Tabs.Content>
-	<Tabs.Content value="volume">
-		<p class="text-sm text-muted-foreground">
-			Weekly sets per muscle, volume against HRV and a training calendar are coming in the next
-			update.
-		</p>
-	</Tabs.Content>
+	<Tabs.Content value="volume"><Volume /></Tabs.Content>
 	<Tabs.Content value="heart-rate">
 		<p class="text-sm text-muted-foreground">
 			A zoomable day of heart rate, ECG and movement is coming in the next update.

@@ -1,11 +1,27 @@
 <script lang="ts" module>
 	import * as echarts from 'echarts/core';
-	import { LineChart } from 'echarts/charts';
-	import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+	import { BarChart, HeatmapChart, LineChart } from 'echarts/charts';
+	import {
+		CalendarComponent,
+		GridComponent,
+		LegendComponent,
+		TooltipComponent,
+		VisualMapComponent
+	} from 'echarts/components';
 	import { CanvasRenderer } from 'echarts/renderers';
 
 	// Tree-shaken: register only what the charts use; add a chart or component here when a page needs it.
-	echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+	echarts.use([
+		BarChart,
+		HeatmapChart,
+		LineChart,
+		CalendarComponent,
+		GridComponent,
+		LegendComponent,
+		TooltipComponent,
+		VisualMapComponent,
+		CanvasRenderer
+	]);
 </script>
 
 <script lang="ts">
