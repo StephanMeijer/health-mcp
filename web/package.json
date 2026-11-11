@@ -34,7 +34,7 @@
 		"@testing-library/jest-dom": "^7.0.1",
 		"@testing-library/svelte": "^5.4.2",
 		"@testing-library/user-event": "^14.6.9",
-		"@types/node": "^24",
+		"@types/node": "^26",
 		"bits-ui": "^2.20.6",
 		"cn": "^0.5.2",
 		"echarts": "^6.1.0",
