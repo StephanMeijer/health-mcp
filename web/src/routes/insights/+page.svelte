@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
+	import HeartRate from './heart-rate.svelte';
 	import Strength from './strength.svelte';
 	import Volume from './volume.svelte';
 </script>
@@ -18,9 +19,5 @@
 
 	<Tabs.Content value="strength"><Strength /></Tabs.Content>
 	<Tabs.Content value="volume"><Volume /></Tabs.Content>
-	<Tabs.Content value="heart-rate">
-		<p class="text-sm text-muted-foreground">
-			A zoomable day of heart rate, ECG and movement is coming in the next update.
-		</p>
-	</Tabs.Content>
+	<Tabs.Content value="heart-rate"><HeartRate /></Tabs.Content>
 </Tabs.Root>
