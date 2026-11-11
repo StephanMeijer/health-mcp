@@ -453,4 +453,28 @@ async fn workout_scope_includes_its_sets() {
     )
     .await;
     assert!(e.contains("not both"), "{e}");
+
+    // Someone else, with threads of their own, never sees the owner's: by workout_id they get nothing, and naming
+    // the owner who hasn't shared with them is refused.
+    let stranger = owner_with_data(&db).await;
+    let (own_workout, own_set) = ids(&db, &stranger).await;
+    ok(
+        &db,
+        &stranger,
+        "thread_start",
+        json!({"target": "set", "id": own_set, "body": "mine"}),
+    )
+    .await;
+    let theirs = ok(&db, &stranger, "comment_list", json!({"workout_id": workout})).await;
+    assert_eq!(theirs, json!([]));
+    let own = ok(&db, &stranger, "comment_list", json!({"workout_id": own_workout})).await;
+    assert_eq!(own.as_array().unwrap().len(), 1);
+    let e = err(
+        &db,
+        &stranger,
+        "comment_list",
+        with_owner(&o, json!({"workout_id": workout})),
+    )
+    .await;
+    assert!(e.contains("has not shared data with you"), "{e}");
 }
