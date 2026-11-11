@@ -74,8 +74,28 @@ docker run -p 8080:8080 \
 | `BIND_ADDR` | default `0.0.0.0:8080` |
 
 Probes: `/healthz` for liveness, `/readyz` for readiness (it checks both database pools).
+The owner needs `CREATEROLE` the first time, or you create the roles yourself beforehand:
 
-**Monitoring.** The probes only tell you the process is up and the database is reachable. They stay green while every
+```sql
+CREATE ROLE vitals_app    LOGIN PASSWORD '…';
+CREATE ROLE vitals_reader LOGIN PASSWORD '…';
+-- importers: write to vitals_data.*, trusted to set user_id (the Authelia `sub`) and source
+CREATE ROLE vitals_importer LOGIN PASSWORD '…';
+GRANT USAGE ON SCHEMA vitals_data TO vitals_importer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA vitals_data TO vitals_importer;
+```
+
+Don't give `vitals_reader` any grant on `vitals_data` or `gym`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
+
+**Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
+(full snippet in SPEC.md). For sharing, every client needs the `email` scope and a claims policy that puts `email` and
+`email_verified` in the access token, and the invite page needs a confidential client `health-web` (SPEC.md, Sharing). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
+For the phone apps, register public clients (`vitals-android`, `gym-android`) with PKCE, `offline_access` and
+`audience: ['<PUBLIC_URL>/api']` (snippet in SPEC.md, Ingest API). In an app, enter only `<PUBLIC_URL>`; it discovers the rest.
+
+### Monitoring
+
+The probes only tell you the process is up and the database is reachable. They stay green while every
 upload is rejected, for example after an IdP change breaks the token audience or an app update sends frames the
 server refuses. The phone keeps unsent frames for 7 days, so a failure nobody notices for a week loses data for good.
 Two cheap checks catch it within hours:
@@ -96,24 +116,6 @@ Two cheap checks catch it within hours:
    or from the server's own log: every request outside the probes gets an INFO line in a `request` span with `method`,
    `path` and `status` (no user, no query string). A run of `401`s points at the token audience or issuer, `400`s at
    frames the server refuses, and `500`/`503` at the server or the database.
-The owner needs `CREATEROLE` the first time, or you create the roles yourself beforehand:
-
-```sql
-CREATE ROLE vitals_app    LOGIN PASSWORD '…';
-CREATE ROLE vitals_reader LOGIN PASSWORD '…';
--- importers: write to vitals_data.*, trusted to set user_id (the Authelia `sub`) and source
-CREATE ROLE vitals_importer LOGIN PASSWORD '…';
-GRANT USAGE ON SCHEMA vitals_data TO vitals_importer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA vitals_data TO vitals_importer;
-```
-
-Don't give `vitals_reader` any grant on `vitals_data` or `gym`: chunks would inherit it, and only the `vitals.*` views filter by user (see SPEC.md, Isolation).
-
-**Authelia:** register a client with `access_token_signed_response_alg: RS256` and `audience: ['<PUBLIC_URL>/mcp']`
-(full snippet in SPEC.md). For sharing, every client needs the `email` scope and a claims policy that puts `email` and
-`email_verified` in the access token, and the invite page needs a confidential client `health-web` (SPEC.md, Sharing). Then add the connector in claude.ai with `<PUBLIC_URL>/mcp` and that client's ID and secret.
-For the phone apps, register public clients (`vitals-android`, `gym-android`) with PKCE, `offline_access` and
-`audience: ['<PUBLIC_URL>/api']` (snippet in SPEC.md, Ingest API). In an app, enter only `<PUBLIC_URL>`; it discovers the rest.
 
 ### Moving from gym-mcp
 
