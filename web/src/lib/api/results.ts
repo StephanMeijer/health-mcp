@@ -4,7 +4,7 @@
  */
 
 import type { KindInfo } from '#lib/kinds.js';
-import type { Kind, LoadBasis, SetType } from './tools.gen.js';
+import type { Kind, LoadBasis, SetType, Target } from './tools.gen.js';
 
 export type Access = 'none' | 'ro' | 'rw';
 
@@ -154,6 +154,38 @@ export interface BodyNote {
 	severity: number | null;
 	notes: string | null;
 	workout_id: number | null;
+}
+
+/** One comment in a thread (src/gym/comment.rs, THREADS). A deleted one keeps its place with `body` null. */
+export interface Comment {
+	id: number;
+	/** The author's email. */
+	author: string;
+	by_owner: boolean;
+	yours: boolean;
+	body: string | null;
+	deleted: boolean;
+	created_at: string;
+	edited_at: string | null;
+}
+
+/** comment_list (array), thread_start, comment_reply/update/delete, thread_resolve (src/gym/comment.rs, THREADS). */
+export interface Thread {
+	thread_id: number;
+	target: Target;
+	/** Exactly one of these three is set, matching `target`. */
+	workout_id: number | null;
+	exercise_id: number | null;
+	set_id: number | null;
+	/** The exercise's name, for an exercise or set thread. */
+	exercise: string | null;
+	resolved: boolean;
+	resolved_at: string | null;
+	created_at: string;
+	/** You started it or own the logbook: you may resolve or reopen it. */
+	can_resolve: boolean;
+	/** Oldest first. */
+	comments: Comment[];
 }
 
 /** share_list (src/share.rs). */
