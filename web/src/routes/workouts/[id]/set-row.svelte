@@ -214,12 +214,13 @@
 			{#if more}
 				<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
 					{#each [['duration', 'Duration (min)', 'duration_min'], ['distance', 'Distance (km)', 'distance_km'], ['avg-hr', 'Average heart rate (bpm)', 'avg_hr'], ['max-hr', 'Max heart rate (bpm)', 'max_hr'], ['speed', 'Average speed (km/h)', 'avg_speed_kmh'], ['incline', 'Average incline (%)', 'avg_incline_pct'], ['calories', 'Calories (kcal)', 'calories']] as const as [key, label, field] (key)}
+						{@const whole = field === 'avg_hr' || field === 'max_hr' || field === 'calories'}
 						<div class="grid gap-1.5">
 							<Label for="{id}-{key}">{label}</Label>
 							<Input
 								id="{id}-{key}"
 								type="number"
-								step="any"
+								step={whole ? 1 : 'any'}
 								class="tabular-nums"
 								bind:value={form[field]}
 							/>

@@ -62,6 +62,9 @@ export function workoutUpdateArgs(w: Workout, f: WorkoutForm): Omit<WorkoutUpdat
 	return out;
 }
 
+/** Kilometres from a form as metres, to the millimetre: `km * 1000` alone can leave float noise (1.001 → 1001.0000000000001). */
+const metres = (km: number) => Math.round(km * 1e6) / 1e3;
+
 const num = (n: number, digits = 1) =>
 	n.toLocaleString(undefined, { maximumFractionDigits: digits });
 
@@ -140,7 +143,7 @@ export function setUpdateArgs(s: WorkoutSet, f: SetForm): UpdateArgs {
 		['avg_incline_pct', f.avg_incline_pct, s.avg_incline_pct],
 		['calories', f.calories, s.calories],
 		['duration_s', f.duration_min == null ? null : Math.round(f.duration_min * 60), s.duration_s],
-		['distance_m', f.distance_km == null ? null : f.distance_km * 1000, s.distance_m]
+		['distance_m', f.distance_km == null ? null : metres(f.distance_km), s.distance_m]
 	] as const;
 	for (const [key, value, was] of numbers) if (value != null && value !== was) out[key] = value;
 	for (const key of ['machine', 'variant', 'notes'] as const)
@@ -175,6 +178,8 @@ export function bulkArgs(ids: number[], field: BulkField, value: string): Update
 		default: {
 			const n = Number(value);
 			if (value.trim() === '' || !Number.isFinite(n) || n < 0) return null;
+			// The server takes whole numbers for these.
+			if ((field === 'reps' || field === 'rest_s') && !Number.isInteger(n)) return null;
 			return { ...base, [field]: n };
 		}
 	}
@@ -230,7 +235,10 @@ export function addSetsArgs(
 				return { error: `Set ${n}: this workout is finished, so pick a time ${window}.` };
 			performed_at = fromLocalInput(r.time);
 			const at = new Date(performed_at).getTime();
-			if (at < new Date(w.started_at).getTime() || at > new Date(w.finished_at).getTime())
+			const start = new Date(w.started_at).getTime();
+			// The input has whole minutes and the start may have seconds: the start's own minute means the start.
+			if (at < start && at > start - 60_000) performed_at = w.started_at;
+			else if (at < start || at > new Date(w.finished_at).getTime())
 				return { error: `Set ${n}: pick a time ${window}, while the workout ran.` };
 		}
 		sets.push({
@@ -238,7 +246,7 @@ export function addSetsArgs(
 			...(r.weight_kg != null && { weight_kg: r.weight_kg }),
 			...(r.rpe != null && { rpe: r.rpe }),
 			...(r.duration_min != null && { duration_s: Math.round(r.duration_min * 60) }),
-			...(r.distance_km != null && { distance_m: r.distance_km * 1000 }),
+			...(r.distance_km != null && { distance_m: metres(r.distance_km) }),
 			...(r.set_type !== 'working' && { set_type: r.set_type }),
 			...(performed_at && { performed_at })
 		});

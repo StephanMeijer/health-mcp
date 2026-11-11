@@ -115,7 +115,7 @@
 {#if found.isPending}
 	<Skeleton class="mb-4 h-8 w-64" />
 	<Skeleton class="h-48 w-full" />
-{:else if found.error instanceof ToolUserError}
+{:else if found.error instanceof ToolUserError && found.error.message.startsWith('no workout with id')}
 	<p class="text-sm text-muted-foreground">
 		This workout doesn’t exist (any more). Pick one from the
 		<a class="underline" href={resolve('/workouts')}>workouts list</a>.

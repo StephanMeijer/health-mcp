@@ -40,4 +40,15 @@ describe('workout page', () => {
 		render(WithQuery, { props: { component: Page } });
 		expect(await screen.findByText(/doesn’t exist \(any more\)/)).toBeInTheDocument();
 	});
+
+	it('shows any other refusal as it is', async () => {
+		mocked.mockImplementation(async (name) => {
+			if (name === 'workout_get')
+				throw new ToolUserError('jamie@trainer.nl has not shared their gym data with you');
+			return [];
+		});
+		render(WithQuery, { props: { component: Page } });
+		expect(await screen.findByText(/has not shared their gym data with you/)).toBeInTheDocument();
+		expect(screen.queryByText(/doesn’t exist/)).toBeNull();
+	});
 });

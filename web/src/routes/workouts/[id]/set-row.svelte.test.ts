@@ -47,6 +47,8 @@ describe('SetRow', () => {
 		await user.click(screen.getByRole('button', { name: 'Edit' }));
 		expect(screen.queryByLabelText('Distance (km)')).toBeNull();
 		await user.click(screen.getByRole('button', { name: 'More: cardio fields' }));
+		expect(screen.getByLabelText('Average heart rate (bpm)')).toHaveAttribute('step', '1');
+		expect(screen.getByLabelText('Calories (kcal)')).toHaveAttribute('step', '1');
 		await user.type(screen.getByLabelText('Distance (km)'), '2.5');
 		await user.click(screen.getByRole('button', { name: 'Save set' }));
 		expect(onsave).toHaveBeenCalledExactlyOnceWith({ set_id: 11, distance_m: 2500 });

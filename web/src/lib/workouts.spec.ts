@@ -33,6 +33,15 @@ describe('setUpdateArgs', () => {
 		});
 	});
 
+	it('leaves an unchanged distance alone, without float noise', () => {
+		const run = { ...set, reps: null, weight_kg: null, distance_m: 1001 };
+		expect(setUpdateArgs(run, setForm(run))).toEqual({ set_id: 11 });
+		expect(setUpdateArgs(run, { ...setForm(run), distance_km: 1.002 })).toEqual({
+			set_id: 11,
+			distance_m: 1002
+		});
+	});
+
 	it('maps the cardio fields to their arguments', () => {
 		const f = { ...setForm(set), distance_km: 5, avg_speed_kmh: 10, avg_hr: 140 };
 		expect(setUpdateArgs(set, f)).toEqual({
@@ -54,6 +63,9 @@ describe('bulkArgs', () => {
 	it('refuses a number field without a number', () => {
 		expect(bulkArgs([1], 'reps', '')).toBeNull();
 		expect(bulkArgs([1], 'rpe', 'abc')).toBeNull();
+		expect(bulkArgs([1], 'reps', '8.5')).toBeNull();
+		expect(bulkArgs([1], 'rest_s', '90.5')).toBeNull();
+		expect(bulkArgs([1], 'rpe', '8.5')).toEqual({ set_ids: [1], rpe: 8.5 });
 	});
 });
 
@@ -78,6 +90,19 @@ describe('addSetsArgs', () => {
 	it('needs reps, a duration or a distance', () => {
 		expect(addSetsArgs(7, [row, newSet()], { ...workout, finished_at: null }, false)).toEqual({
 			error: expect.stringMatching(/^Set 2:/)
+		});
+	});
+
+	it('reads the start minute of a start with seconds as the start', () => {
+		const w = { ...workout, started_at: '2026-11-10T18:00:30.123456+00:00' };
+		const at = (iso: string) => ({ ...row, time: toLocalInput(iso) });
+		expect(addSetsArgs(7, [at('2026-11-10T18:00:00Z')], w, false)).toEqual({
+			args: expect.objectContaining({
+				sets: [expect.objectContaining({ performed_at: w.started_at })]
+			})
+		});
+		expect(addSetsArgs(7, [at('2026-11-10T17:59:00Z')], w, false)).toEqual({
+			error: expect.stringMatching(/while the workout ran/)
 		});
 	});
 
