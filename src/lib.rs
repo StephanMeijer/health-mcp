@@ -498,6 +498,13 @@ mod tests {
 
     /// A JSON-RPC request to `/mcp` with a valid MCP token; returns the response body.
     async fn mcp(body: serde_json::Value) -> String {
+        let (status, body) = mcp_at("health.example.com", body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// [`mcp`] with any `Host` header; returns the status and body.
+    async fn mcp_at(host: &str, body: serde_json::Value) -> (StatusCode, String) {
         // Lazy pools that give up at once: listing and routing tools needs no database.
         let pool = || {
             sqlx::postgres::PgPoolOptions::new()
@@ -519,16 +526,16 @@ mod tests {
             Router::new(),
         );
         let req = Request::post("/mcp")
-            .header(header::HOST, "health.example.com")
+            .header(header::HOST, host)
             .header(header::AUTHORIZATION, bearer(MCP))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream")
             .body(Body::from(body.to_string()))
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
+        let status = res.status();
         let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
-        String::from_utf8(body.to_vec()).unwrap()
+        (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
     /// #115: the MCP handler must serve the gym tools too, not only the vitals router `#[tool_handler]` defaults to.
@@ -559,6 +566,18 @@ mod tests {
         .await;
         assert!(!call.contains("-32602") && !call.contains("not found"), "{call}");
         assert!(call.contains(r#""result""#), "{call}");
+    }
+
+    /// #86: a valid token is not enough; `/mcp` only answers for its own `Host` (DNS rebinding).
+    /// `localhost` is in rmcp's default list, so it is refused only while `with_allowed_hosts` replaces it.
+    #[tokio::test]
+    async fn mcp_refuses_a_wrong_host() {
+        for host in ["evil.example.com", "localhost"] {
+            let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+            let (status, body) = mcp_at(host, list).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{host}: {body}");
+            assert!(!body.contains("tools"), "{host}: {body}");
+        }
     }
 
     #[test]
