@@ -44,3 +44,18 @@ export function chartTheme(read: TokenReader) {
 		timeAxis: axis
 	};
 }
+
+/** The theme tokens uPlot needs: it takes colours per axis and series rather than a theme object. */
+export function uplotTheme(read: TokenReader) {
+	const t = (name: string) => commaColor(read(`--${name}`));
+	return {
+		colors: [1, 2, 3, 4, 5].map((i) => t(`chart-${i}`)),
+		axis: {
+			stroke: t('muted-foreground'),
+			grid: { stroke: t('border'), width: 1 },
+			ticks: { stroke: t('border'), width: 1 },
+			font: '12px Inter Variable, system-ui, sans-serif'
+		}
+	};
+}
+export type UplotTheme = ReturnType<typeof uplotTheme>;
