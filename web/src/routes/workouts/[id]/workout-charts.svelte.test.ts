@@ -73,7 +73,7 @@ describe('workout overview', () => {
 		expect(screen.getByText('max 160 bpm')).toBeInTheDocument();
 		expect(screen.getByText('400')).toBeInTheDocument(); // 2 × 10 × 20 kg
 		expect(screen.getByText(/120–139 bpm · 1 min/)).toBeInTheDocument();
-		expect(screen.getByText('Legs 100% · 4 sets')).toBeInTheDocument();
+		expect(screen.getByText('Legs 100% · 4 weighted sets')).toBeInTheDocument();
 		expect(screen.getAllByText('Leg press').length).toBeGreaterThan(1); // set grid and first-time badge
 	});
 

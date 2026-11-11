@@ -298,13 +298,13 @@
 						key: s.region,
 						value: s.sets,
 						color: `var(--${REGION_COLOR[s.region]})`,
-						label: `${s.region} ${s.pct}% · ${n(s.sets, 1)} sets`
+						label: `${s.region} ${s.pct}% · ${n(s.sets, 1)} weighted sets`
 					})),
 					shares.reduce((a, s) => a + s.sets, 0)
 				)}
 				<p class="text-xs text-muted-foreground">
-					Working strength sets: a set counts fully for its main muscles and half for the ones that
-					assist.
+					Weighted sets: each working strength set counts once for every main muscle and half for
+					every muscle that assists.
 				</p>
 			{:else}
 				<p class="text-sm text-muted-foreground">No working strength sets in this workout.</p>
