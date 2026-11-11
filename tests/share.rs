@@ -319,26 +319,35 @@ async fn invite_page_logs_in_and_accepts() {
         ("health-web", "S256")
     );
     assert_eq!(q["audience"], API);
-    let cookie = h[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
-    let callback = |state: &str| {
+    // __Host-: a sibling subdomain can't plant it (Secure, Path=/, no Domain).
+    let set_cookie = h[header::SET_COOKIE].to_str().unwrap();
+    let (cookie, attrs) = set_cookie.split_once("; ").unwrap();
+    let cookie = cookie.to_owned();
+    assert!(cookie.starts_with("__Host-health_invite="), "{set_cookie}");
+    assert_eq!(attrs, "Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax");
+    let callback = |state: &str, cookie: &str| {
         Request::get(format!("/invite/callback?code=the-code&state={state}"))
-            .header(header::COOKIE, &cookie)
+            .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap()
     };
+    let clear = "__Host-health_invite=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
 
-    let (s, _, _) = send(callback(&"f".repeat(64))).await;
+    let (s, _, _) = send(callback(&"f".repeat(64), &cookie)).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "a state that isn't ours");
-    let (s, h, html) = send(callback(&q["state"])).await;
+    // The same value under the unprefixed name, as a sibling could plant it: ignored, nothing accepted.
+    let planted = cookie.replacen("__Host-health_invite=", "health_invite=", 1);
+    let (s, h, html) = send(callback(&q["state"], &planted)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{html}");
+    assert!(html.contains("Login expired"), "{html}");
+    assert_eq!(h[header::SET_COOKIE], clear);
+    let mine = ok(&db, &g, "share_list", json!({})).await;
+    assert_eq!(mine["shared_with_you"], json!([]), "{mine}");
+
+    let (s, h, html) = send(callback(&q["state"], &cookie)).await;
     assert_eq!(s, StatusCode::OK, "{html}");
     assert!(html.contains("Invite accepted"), "{html}");
-    assert!(h[header::SET_COOKIE].to_str().unwrap().contains("Max-Age=0"));
+    assert_eq!(h[header::SET_COOKIE], clear);
     let mine = ok(&db, &g, "share_list", json!({})).await;
     assert_eq!(mine["shared_with_you"][0]["vitals"], "rw");
 

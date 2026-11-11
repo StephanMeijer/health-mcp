@@ -425,8 +425,9 @@ An owner lets another user read (`ro`) or read and write (`rw`) their data, per 
 - **Accept:** only a caller whose token carries the invited address as a verified email (`email_verified: true`) can
   accept: with `share_respond` (app or Claude, by the invite id from `share_list`), or on the invite page. The page
   shows who shares what, with Accept and Decline. Accept logs in with Authelia (authorization code with PKCE, client
-  `health-web`, state and verifier in a 10-minute HttpOnly cookie on `/invite`), gets an `/api` access token and checks it
-  exactly like an app token before accepting. Decline needs only the link.
+  `health-web`, state and verifier in the 10-minute cookie `__Host-health_invite` (HttpOnly, Secure, SameSite=Lax, path
+  `/`), so a sibling subdomain can't plant its own), gets an `/api` access token and checks it exactly like an app token
+  before accepting. Decline needs only the link.
 - **Use:** every data tool and `sql_query` take an optional `owner`: the owner's email (or `sub`). One check runs
   before the tool, for MCP (`call_tool`) and `/api` alike (`share::act_as`): the tool's domain comes from the router
   it is in, read or write from its `read_only_hint` (a tool without the hint counts as writing). On success the tool
