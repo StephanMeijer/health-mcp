@@ -72,7 +72,6 @@
 
 	const date = (iso: string) =>
 		new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' });
-	const workout = (id: number) => `${resolve('/workouts')}/${id}`;
 </script>
 
 <div class="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -171,7 +170,6 @@
 			hint="Your heaviest set, best estimated 1RM and biggest workout volume per exercise show up here once you log working sets."
 		/>
 	{:else}
-		<!-- eslint-disable svelte/no-navigation-without-resolve -- workout() resolves; /workouts/[id] is typed once that page lands -->
 		<Table.Root>
 			<Table.Header>
 				<Table.Row>
@@ -193,7 +191,7 @@
 									>{num(r.heaviest_set.weight_kg)} kg × {r.heaviest_set.reps}</span
 								>
 								<a
-									href={workout(r.heaviest_set.workout_id)}
+									href={resolve('/workouts/[id]', { id: String(r.heaviest_set.workout_id) })}
 									class="block text-xs text-muted-foreground hover:underline"
 									>{date(r.heaviest_set.performed_at)}</a
 								>
@@ -203,7 +201,7 @@
 							{#if r.best_e1rm}
 								<span class="tabular-nums">{num(r.best_e1rm.e1rm_kg)} kg</span>
 								<a
-									href={workout(r.best_e1rm.workout_id)}
+									href={resolve('/workouts/[id]', { id: String(r.best_e1rm.workout_id) })}
 									class="block text-xs text-muted-foreground hover:underline"
 									>{num(r.best_e1rm.weight_kg)} kg × {r.best_e1rm.reps}, {date(
 										r.best_e1rm.performed_at
@@ -215,7 +213,7 @@
 							{#if r.best_volume_workout}
 								<span class="tabular-nums">{num(r.best_volume_workout.volume_kg, 0)} kg</span>
 								<a
-									href={workout(r.best_volume_workout.workout_id)}
+									href={resolve('/workouts/[id]', { id: String(r.best_volume_workout.workout_id) })}
 									class="block text-xs text-muted-foreground hover:underline"
 									>{date(r.best_volume_workout.date)}</a
 								>
@@ -225,6 +223,5 @@
 				{/each}
 			</Table.Body>
 		</Table.Root>
-		<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	{/if}
 </section>
