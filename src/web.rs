@@ -44,7 +44,8 @@ impl Web {
     }
 }
 
-const COOKIE: &str = "health_invite";
+/// `__Host-`: Secure, `Path=/`, no `Domain`, so a sibling subdomain can't plant it.
+const COOKIE: &str = "__Host-health_invite";
 /// Long enough to log in (including a second factor), short enough not to linger.
 const COOKIE_MAX_AGE_S: u32 = 600;
 
@@ -209,7 +210,7 @@ async fn accept(State(w): State<Web>, Path(code): Path<String>) -> Response {
     };
     // Lax: sent on the IdP's top-level redirect back to the callback, not on cross-site subrequests.
     let cookie = format!(
-        "{COOKIE}={state}.{verifier}.{code}; Path=/invite; Max-Age={COOKIE_MAX_AGE_S}; HttpOnly; Secure; SameSite=Lax"
+        "{COOKIE}={state}.{verifier}.{code}; Path=/; Max-Age={COOKIE_MAX_AGE_S}; HttpOnly; Secure; SameSite=Lax"
     );
     ([(header::SET_COOKIE, cookie)], Redirect::to(url.as_str())).into_response()
 }
@@ -241,7 +242,7 @@ fn login_cookie(headers: &HeaderMap) -> Option<(String, String, String)> {
 }
 
 async fn callback(State(w): State<Web>, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
-    let clear = format!("{COOKIE}=; Path=/invite; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+    let clear = format!("{COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
     let res = finish_login(&w, &headers, q).await;
     ([(header::SET_COOKIE, clear)], res).into_response()
 }
@@ -373,5 +374,7 @@ mod tests {
         assert_eq!(login_cookie(&h), None);
         h.insert(header::COOKIE, format!("{COOKIE}={s}.{v}.<script>").parse().unwrap());
         assert_eq!(login_cookie(&h), None);
+        h.insert(header::COOKIE, format!("health_invite={s}.{v}.{c}").parse().unwrap());
+        assert_eq!(login_cookie(&h), None, "only the __Host- name counts");
     }
 }
