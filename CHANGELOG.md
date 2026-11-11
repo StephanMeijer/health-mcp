@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/StephanMeijer/health-mcp/compare/v0.7.2...v0.7.3) - 2026-11-10
+
+### Added
+
+- *(web)* invite people to your logbook and manage who you share with
+- *(web)* edit training settings and body notes in the browser
+- *(web)* manage gyms and exercises, and find alternatives, in the web app
+- *(web)* see your vitals and sleep, and log, edit or delete your own readings and nights
+- *(web)* forms kit, result types and query helpers for the web screens
+- *(web)* typed tool client, data layer and app shell
+- *(web)* browser login with a server-side session for the web app
+
+### Fixed
+
+- *(web)* send the anti-framing headers on the session routes too
+
+### Other
+
+- *(deps)* bump tailwind-variants from 3.3.1 to 4.0.1 in /web
+- *(deps)* bump vitest from 4.1.12 to 5.1.0 in /web
+- *(deps)* bump base64 from 0.22.1 to 0.23.1
+- *(deps)* bump sha2 from 0.10.9 to 0.11.1
+- *(web)* share test cleanup, jest-dom types and a QueryClient wrapper, and fix tabs selectors
+
 ## [0.7.2](https://github.com/StephanMeijer/health-mcp/compare/v0.7.1...v0.7.2) - 2026-11-10
 
 ### Added
