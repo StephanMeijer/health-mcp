@@ -129,7 +129,9 @@ roles. The dump records that owner on every object, so later migrations, which r
 
 **Rolling back:** stop the server, restore the backup, and start the previous image. Anything written after the backup
 is lost for good, including what the phones uploaded: a phone deletes frames from its outbox once the server has
-answered `200`, so only frames it never got a `200` for are sent again. Restore a dump into an empty database as a
+answered `200`, so only frames it never got a `200` for are sent again. Create an empty database owned by the owner role
+(`createdb -O <owner> health`, or `CREATE DATABASE health OWNER <owner>`: the dump doesn't carry the database's owner,
+and later migrations that add a schema need it). Restore into it as a
 superuser (`timescaledb_pre_restore()` needs one) and without `--no-owner`, so the objects stay owned by the owner
 role. Follow Timescale's steps ([logical backup](https://www.tigerdata.com/docs/self-hosted/latest/backup-and-restore/logical-backup)):
 
