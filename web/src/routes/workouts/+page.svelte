@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import ReadOnlyNote from '#lib/components/read-only-note.svelte';
 	import ExercisePicker from '#lib/components/exercise-picker.svelte';
@@ -14,7 +15,6 @@
 	import type { Exercise, GymListItem, Workout } from '#lib/api/results.js';
 	import { logbook } from '#lib/logbook.svelte.js';
 	import { fromLocalInput } from '#lib/vitals.js';
-	import { workoutHref } from '#lib/workouts.js';
 	import CurrentWorkout from './current-workout.svelte';
 	import WorkoutChunk from './workout-chunk.svelte';
 
@@ -66,7 +66,7 @@
 			{
 				onSuccess: (w) => {
 					pastOpen = false;
-					goto(workoutHref(w));
+					goto(resolve('/workouts/[id]', { id: String(w.workout_id) }));
 				}
 			}
 		);

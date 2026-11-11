@@ -1,4 +1,3 @@
-import { resolve } from '$app/paths';
 import type { Workout, WorkoutSet } from '#lib/api/results.js';
 import type {
 	LoadBasis,
@@ -24,17 +23,6 @@ export const LOAD_BASES: { value: LoadBasis; label: string }[] = [
 ];
 
 export const setTypeLabel = (t: SetType) => SET_TYPES.find((x) => x.value === t)?.label ?? t;
-
-/**
- * The `to` that, with `from` = `startedAt`, makes workout_list return only workouts started at that instant: there is
- * no workout_get. Postgres keeps microseconds, a JS Date milliseconds, so this rounds down and adds 1 ms.
- */
-export const justAfter = (startedAt: string) =>
-	new Date(new Date(startedAt).getTime() + 1).toISOString();
-
-/** A workout's page. It carries the start, which finds the workout (see `justAfter`). */
-export const workoutHref = (w: Pick<Workout, 'workout_id' | 'started_at'>) =>
-	resolve(`/workouts/[id]?at=${encodeURIComponent(w.started_at)}`, { id: String(w.workout_id) });
 
 /** The workout editor's fields; times are `datetime-local` values, `gym` an id. */
 export interface WorkoutForm {

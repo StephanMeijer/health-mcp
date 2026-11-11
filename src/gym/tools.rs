@@ -278,6 +278,14 @@ impl Health {
     }
 
     #[tool(
+        description = "One workout by id with all its sets, grouped by exercise.",
+        annotations(title = "Show workout", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn workout_get(&self, p: P, a: Parameters<WorkoutGetArgs>) -> R {
+        call!(self, p, workout_get, a)
+    }
+
+    #[tool(
         description = "Past workouts with their sets, filterable by gym, exercise and date.",
         annotations(title = "List workouts", read_only_hint = true, open_world_hint = false)
     )]
@@ -567,6 +575,7 @@ pub(crate) async fn call_api(app: &App, owner: &str, by: &Author, name: &str, ar
         "workout_finish" => with_args!(finish),
         "workout_update" => with_args!(update),
         "workout_current" => current(app, owner).await,
+        "workout_get" => with_args!(workout_get),
         "workout_list" => with_args!(workout_list),
         "set_add" => with_args!(set_add),
         "set_update" => with_args!(set_update),
@@ -593,7 +602,7 @@ mod tests {
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
         let tools = Health::gym_router().list_all();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 30);
         for t in &tools {
             let a = t
                 .annotations

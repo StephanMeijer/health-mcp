@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
@@ -14,14 +15,13 @@
 	} from '#lib/api/results.js';
 	import type { ToolName } from '#lib/api/tools.gen.js';
 	import { logbook } from '#lib/logbook.svelte.js';
-	import { workoutHref } from '#lib/workouts.js';
 
 	/** The open workout (continue or finish it), or a gym to start one at. */
 	const current = toolQuery<WorkoutCurrent, 'workout_current'>('workout_current', () => ({}));
 	const gyms = toolQuery<GymListItem[], 'gym_list'>('gym_list', () => ({}));
 	let canWrite = $derived(logbook.canWrite('gym'));
 
-	const invalidate: ToolName[] = ['workout_current', 'workout_list', 'gym_list'];
+	const invalidate: ToolName[] = ['workout_current', 'workout_list', 'workout_get', 'gym_list'];
 	const start = toolMutation<WorkoutStartResult, 'workout_start'>('workout_start', {
 		invalidate,
 		success: (r) => (r.status === 'resumed' ? 'Workout resumed' : 'Workout started')
@@ -43,7 +43,7 @@
 		try {
 			const r = await start.mutateAsync({ gym, ...(finish_open && { finish_open }) });
 			clash = null;
-			await goto(workoutHref(r.workout));
+			await goto(resolve('/workouts/[id]', { id: String(r.workout.workout_id) }));
 		} catch (e) {
 			clash = (errorJson(e)?.open_workout as Workout | undefined) ?? null;
 		}
@@ -77,7 +77,8 @@
 				<div class="ml-auto flex gap-2">
 					<a
 						class={buttonVariants({ variant: canWrite ? 'outline' : 'default' })}
-						href={workoutHref(open)}>{canWrite ? 'Continue workout' : 'Open workout'}</a
+						href={resolve('/workouts/[id]', { id: String(open.workout_id) })}
+						>{canWrite ? 'Continue workout' : 'Open workout'}</a
 					>
 					{#if canWrite}
 						<Button onclick={() => finish.mutate({})} disabled={finish.isPending}

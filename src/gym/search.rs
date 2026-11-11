@@ -730,7 +730,19 @@ pub async fn exercise_alternatives(app: &App, owner: &str, a: AlternativesArgs) 
     Ok(v)
 }
 
-// ---------- workout_list ----------
+// ---------- workout_get / workout_list ----------
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WorkoutGetArgs {
+    pub workout_id: i64,
+}
+
+pub async fn workout_get(app: &App, owner: &str, a: WorkoutGetArgs) -> AppResult<Value> {
+    let mut tx = db::begin_read(app, owner).await?;
+    let w = workout::workout_json(&mut tx, owner, a.workout_id).await?;
+    tx.commit().await?;
+    Ok(w)
+}
 
 #[derive(Deserialize, JsonSchema)]
 pub struct WorkoutListArgs {

@@ -1806,6 +1806,7 @@ async fn app_gets_the_tool_schemas() {
             "workout_add_past",
             "workout_current",
             "workout_finish",
+            "workout_get",
             "workout_list",
             "workout_start",
             "workout_update"

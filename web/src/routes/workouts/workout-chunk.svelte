@@ -5,7 +5,7 @@
 	import { toolQuery } from '#lib/api/query.svelte.js';
 	import type { Workout } from '#lib/api/results.js';
 	import type { WorkoutListArgs } from '#lib/api/tools.gen.js';
-	import { workoutHref } from '#lib/workouts.js';
+	import { resolve } from '$app/paths';
 	import WorkoutChunk from './workout-chunk.svelte';
 
 	/**
@@ -57,7 +57,7 @@
 		{#each list.data as w (w.workout_id)}
 			<li>
 				<a
-					href={workoutHref(w)}
+					href={resolve('/workouts/[id]', { id: String(w.workout_id) })}
 					class="grid gap-1 rounded-lg border p-3 transition-colors hover:bg-accent"
 				>
 					<span class="flex flex-wrap items-baseline justify-between gap-x-3">

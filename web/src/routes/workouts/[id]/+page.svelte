@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import PageHeader from '#lib/components/page-header.svelte';
@@ -16,6 +15,7 @@
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
+	import { ToolUserError } from '#lib/api/client.js';
 	import { toolMutation, toolQuery } from '#lib/api/query.svelte.js';
 	import type { BodyNote, GymListItem, SetAddResult, Workout } from '#lib/api/results.js';
 	import type { ToolName } from '#lib/api/tools.gen.js';
@@ -25,10 +25,8 @@
 		BULK_FIELDS,
 		SET_TYPES,
 		bulkArgs,
-		justAfter,
 		setTypeLabel,
 		workoutForm,
-		workoutHref,
 		workoutUpdateArgs,
 		type BulkField,
 		type WorkoutForm
@@ -37,17 +35,11 @@
 	import AddSets from './add-sets.svelte';
 
 	let id = $derived(Number(page.params.id));
-	let at = $derived(page.url.searchParams.get('at') ?? '');
-	// No workout_get: the workouts started at exactly `at` are this one (and, rarely, one started the same millisecond).
-	const found = toolQuery<Workout[], 'workout_list'>(
-		'workout_list',
-		() => ({ from: at, to: justAfter(at), limit: 50 }),
-		{ enabled: () => at !== '' }
-	);
-	let workout = $derived(found.data?.find((w) => w.workout_id === id));
+	const found = toolQuery<Workout, 'workout_get'>('workout_get', () => ({ workout_id: id }));
+	let workout = $derived(found.data);
 	let canWrite = $derived(logbook.canWrite('gym'));
 
-	const invalidate: ToolName[] = ['workout_list', 'workout_current'];
+	const invalidate: ToolName[] = ['workout_get', 'workout_list', 'workout_current'];
 	const update = toolMutation<Workout, 'workout_update'>('workout_update', {
 		invalidate,
 		success: 'Workout saved'
@@ -60,11 +52,6 @@
 	const change = toolMutation('set_update', { invalidate, success: 'Set saved' });
 	const changeMany = toolMutation('set_update', { invalidate, success: 'Sets changed' });
 	const removeMany = toolMutation('set_delete', { invalidate, success: 'Sets deleted' });
-
-	/** A new start moves the workout's address: follow it, so the page keeps finding it. */
-	function follow(w: Workout) {
-		if (w.started_at !== at) goto(workoutHref(w), { replace: true, reset: false });
-	}
 
 	// ---- edit dialog
 	const gyms = toolQuery<GymListItem[], 'gym_list'>('gym_list', () => ({}), {
@@ -83,10 +70,7 @@
 		e.preventDefault();
 		if (!workout || !form) return;
 		update.mutate(workoutUpdateArgs(workout, form), {
-			onSuccess: (w) => {
-				form = null;
-				follow(w);
-			}
+			onSuccess: () => (form = null)
 		});
 	}
 
@@ -106,9 +90,10 @@
 	}
 
 	// ---- body notes
-	// shortcut: body_note_list has no workout filter, so this loads every note and keeps this workout's; add one to the server if lists grow long.
-	const notes = toolQuery<BodyNote[], 'body_note_list'>('body_note_list', () => ({}));
-	let workoutNotes = $derived(notes.data?.filter((n) => n.workout_id === id) ?? []);
+	const notes = toolQuery<BodyNote[], 'body_note_list'>('body_note_list', () => ({
+		workout_id: id
+	}));
+	let workoutNotes = $derived(notes.data ?? []);
 
 	const day = (iso: string) =>
 		new Date(iso).toLocaleDateString(undefined, {
@@ -127,17 +112,17 @@
 	href={resolve('/workouts')}
 	class="mb-2 inline-block text-sm text-muted-foreground hover:underline">← All workouts</a
 >
-{#if at && found.isPending}
+{#if found.isPending}
 	<Skeleton class="mb-4 h-8 w-64" />
 	<Skeleton class="h-48 w-full" />
+{:else if found.error instanceof ToolUserError}
+	<p class="text-sm text-muted-foreground">
+		This workout doesn’t exist (any more). Pick one from the
+		<a class="underline" href={resolve('/workouts')}>workouts list</a>.
+	</p>
 {:else if found.isError}
 	<p class="text-sm text-destructive">This workout could not be loaded: {found.error.message}</p>
-{:else if !workout}
-	<p class="text-sm text-muted-foreground">
-		This workout can’t be found: it may have been deleted, or moved to another time. Open it from
-		the <a class="underline" href={resolve('/workouts')}>workouts list</a>.
-	</p>
-{:else}
+{:else if workout}
 	{@const w = workout}
 	<PageHeader
 		title={day(w.started_at)}
@@ -264,7 +249,7 @@
 		{/if}
 
 		{#if canWrite}
-			<AddSets workout={w} onadd={(args) => add.mutateAsync(args).then((r) => follow(r.workout))} />
+			<AddSets workout={w} onadd={(args) => add.mutateAsync(args)} />
 		{/if}
 
 		<section class="grid gap-3" aria-labelledby="notes-title">

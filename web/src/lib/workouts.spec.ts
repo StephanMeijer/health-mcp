@@ -4,19 +4,12 @@ import { toLocalInput } from '#lib/vitals.js';
 import {
 	addSetsArgs,
 	bulkArgs,
-	justAfter,
 	newSet,
 	setForm,
 	setUpdateArgs,
 	workoutForm,
 	workoutUpdateArgs
 } from './workouts.js';
-
-describe('justAfter', () => {
-	it('is one millisecond past the start, microseconds dropped', () => {
-		expect(justAfter('2026-11-10T18:00:00.123456+00:00')).toBe('2026-11-10T18:00:00.124Z');
-	});
-});
 
 describe('setUpdateArgs', () => {
 	it('sends only the id when nothing changed', () => {
