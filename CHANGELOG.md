@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/StephanMeijer/health-mcp/compare/v0.7.5...v0.7.6) - 2026-11-11
+
+### Added
+
+- *(web)* show a workout as the training report does: heart rate with exercise blocks, every set, zones and regions
+
+### Fixed
+
+- *(tools)* a reading_delete by date range locks only the chunks in that range
+
 ## [0.7.5](https://github.com/StephanMeijer/health-mcp/compare/v0.7.4...v0.7.5) - 2026-11-11
 
 ### Fixed
