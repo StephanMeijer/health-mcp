@@ -121,6 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0](https://github.com/StephanMeijer/vitals-mcp/compare/v0.4.3...v0.5.0) - 2026-11-06
 
+Migration 0008 drops the `body` table (after copying it into `measurement`) and the `blood_pressure` table (not copied). Back up before upgrading to this version.
+
 ### Added
 
 - *(tools)* [**breaking**] store body measurements one value per row

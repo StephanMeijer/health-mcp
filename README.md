@@ -129,6 +129,56 @@ pg_dump --data-only -t user_settings -t gym -t exercise -t workout -t workout_se
 
 pg_dump leaves out the generated search columns and resets the id sequences. gym-mcp's `measurement` table is not carried over.
 
+### Upgrade and rollback
+
+With `DATABASE_OWNER_URL` set, the server runs every pending migration in `migrations/` when it starts, before it
+serves anything. There are no down migrations: once a new version has started, its migrations stay applied. An older
+image with `DATABASE_OWNER_URL` set then refuses to start (`migration N was previously applied but is missing in the
+resolved migrations`), and without it, it fails as soon as it touches a table that changed. Rolling back the image
+alone is therefore not a rollback.
+
+**Before upgrading** to a release that adds a file to `migrations/`, back up the whole database: a volume snapshot
+with Postgres stopped, or a dump as the owner:
+
+```sh
+pg_dump -Fc -f health.dump "$HEALTH_DB_OWNER"
+```
+
+Dump the whole database, not single schemas. It must include `vitals_private.secret`, the key the server signs the
+user id with for every `sql_query` (without it, every `sql_query` fails), and `_sqlx_migrations`, the record of applied
+migrations (without it, the next start runs migration 0001 again and fails). `pg_dump` may print errors about
+TimescaleDB's catalog; Timescale says these can usually be ignored. Roles are not in the dump: restore into a cluster
+that already has the owner role (the user in `DATABASE_OWNER_URL`), `vitals_app`, `vitals_reader` and your importer
+roles. The dump records that owner on every object, so later migrations, which run as the owner, can still change them.
+
+**Rolling back:** stop the server, restore the backup, and start the previous image. Anything written after the backup
+is lost for good, including what the phones uploaded: a phone deletes frames from its outbox once the server has
+answered `200`, so only frames it never got a `200` for are sent again. Create an empty database owned by the owner role
+(`createdb -O <owner> health`, or `CREATE DATABASE health OWNER <owner>`: the dump doesn't carry the database's owner,
+and later migrations that add a schema need it). Restore into it as a
+superuser (`timescaledb_pre_restore()` needs one) and without `--no-owner`, so the objects stay owned by the owner
+role. Follow Timescale's steps ([logical backup](https://www.tigerdata.com/docs/self-hosted/latest/backup-and-restore/logical-backup)):
+
+```sh
+psql "$EMPTY_DB_SUPERUSER" -c 'CREATE EXTENSION IF NOT EXISTS timescaledb' -c 'SELECT timescaledb_pre_restore()'
+pg_restore -Fc -d "$EMPTY_DB_SUPERUSER" health.dump   # no -j: it doesn't restore TimescaleDB's catalog correctly
+psql "$EMPTY_DB_SUPERUSER" -c 'SELECT timescaledb_post_restore()'
+```
+
+Restore on the same PostgreSQL and TimescaleDB versions you dumped from, then point the `DATABASE_*` URLs at that database.
+
+**Skipping migrations:** leave `DATABASE_OWNER_URL` unset; the server then starts without touching the schema. It
+fails at runtime if the schema is behind, so run the new version once with the owner URL when you're ready. Leaving it
+unset is no way to run an older image on a newer schema: restore the backup instead.
+
+**Migrations that change data for good** (the version that first shipped them in brackets):
+
+- 0003 (0.2.0) replaces the text `device_id` of `ecg`, `acc`, `device_battery` and `device_event` with a number from
+  the new `devices` table, and renames source `polar_h10` to `app`.
+- 0006 (0.4.0) copies `ecg_frame` and `acc_frame` (the old one-row-per-frame data) into the per-sample `ecg` and `acc`
+  tables, then drops them.
+- 0008 (0.5.0) copies `body` into `measurement` and drops it, and drops `blood_pressure` without copying it.
+
 ## Develop
 
 ```sh
@@ -146,6 +196,10 @@ Conventional commits on `main` make release-plz open a release PR (version bump 
 Merging it tags `vX.Y.Z`, which builds a multi-arch image (amd64 and arm64, native runners) and pushes it to
 `ghcr.io/stephanmeijer/health-mcp` with build provenance. Actions are SHA-pinned in `.github/workflows/actions.lock`:
 run `gh actions-lock` after changing any `uses:`.
+
+A commit whose migration drops or rewrites data is a breaking change: write it as `feat(db)!: …` or add a
+`BREAKING CHANGE:` footer. release-plz then marks it **breaking** in the CHANGELOG and bumps the minor version (while
+below 1.0), so operators know to back up first.
 
 ## License
 
