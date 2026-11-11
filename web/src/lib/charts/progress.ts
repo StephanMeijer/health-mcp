@@ -6,13 +6,14 @@ export const setupName = (s: { machine: string | null; variant: string | null })
 
 /** progress rows → one line per machine/variant (weights don't compare across machines), points in date order. */
 export function progressLines(rows: Progress['series']) {
-	const lines = new Map<string, [string, number][]>();
+	const lines = new Map<string, { name: string; points: [string, number][] }>();
 	for (const r of rows) {
-		const name = setupName(r);
-		if (!lines.has(name)) lines.set(name, []);
-		lines.get(name)!.push([r.period_start, r.value]);
+		// The server's SETUP_KEY (src/gym/search.rs): case-insensitive, machine and variant kept apart.
+		const key = `${r.machine?.toLowerCase() ?? ''}|${r.variant?.toLowerCase() ?? ''}`;
+		if (!lines.has(key)) lines.set(key, { name: setupName(r), points: [] });
+		lines.get(key)!.points.push([r.period_start, r.value]);
 	}
-	return [...lines].map(([name, points]) => ({
+	return [...lines.values()].map(({ name, points }) => ({
 		name,
 		points: points.sort((a, b) => a[0].localeCompare(b[0]))
 	}));

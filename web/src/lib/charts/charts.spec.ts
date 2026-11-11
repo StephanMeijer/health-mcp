@@ -35,6 +35,31 @@ describe('progressLines', () => {
 		]);
 	});
 
+	it('keeps a machine and a variant of the same name apart, like the server', () => {
+		const lines = progressLines([
+			{ period_start: '2026-10-05', machine: 'Technogym', variant: null, value: 60 },
+			{ period_start: '2026-10-05', machine: null, variant: 'Technogym', value: 40 }
+		]);
+		expect(lines.map((l) => l.points)).toEqual([[['2026-10-05', 60]], [['2026-10-05', 40]]]);
+	});
+
+	it('merges spellings that differ only in case into one line, named by its first row', () => {
+		expect(
+			progressLines([
+				{ period_start: '2026-10-05', machine: 'technogym', variant: null, value: 60 },
+				{ period_start: '2026-10-12', machine: 'Technogym', variant: null, value: 62 }
+			])
+		).toEqual([
+			{
+				name: 'technogym',
+				points: [
+					['2026-10-05', 60],
+					['2026-10-12', 62]
+				]
+			}
+		]);
+	});
+
 	it('draws nothing without rows', () => {
 		expect(progressLines([])).toEqual([]);
 	});
