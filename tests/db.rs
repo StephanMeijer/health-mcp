@@ -472,6 +472,47 @@ async fn imported_readings_are_read_only() {
     assert_eq!(rows["rows"], json!([{"bpm": 55, "source": "import"}]));
 }
 
+/// A range delete must touch only the chunks in its range: locking every chunk made it deadlock with
+/// compress_chunk (40P01 in CI, runs 42931058991 and 43051445126).
+#[tokio::test]
+async fn reading_delete_by_range_leaves_other_chunks_alone() {
+    let (v, _, owner) = setup().await;
+    let a = uid("alice");
+    // No other test writes heart_rate in 2001, so this chunk is ours.
+    add_hr(&v, &a, "2001-01-01T07:00:00Z", 60).await;
+    add_hr(&v, &a, "2026-10-02T07:00:00Z", 61).await;
+    let chunk: String = sqlx::query_scalar(
+        "SELECT format('%I.%I', chunk_schema, chunk_name) FROM timescaledb_information.chunks
+          WHERE hypertable_schema = 'vitals_data' AND hypertable_name = 'heart_rate'
+            AND range_start <= '2001-01-01'::timestamptz AND range_end > '2001-01-01'::timestamptz",
+    )
+    .fetch_one(&owner)
+    .await
+    .unwrap();
+    let mut held = owner.begin().await.unwrap();
+    sqlx::query(AssertSqlSafe(format!("LOCK TABLE {chunk} IN ACCESS EXCLUSIVE MODE")))
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    let range = json!({"kind": "heart_rate", "from": "2026-10-01T00:00:00Z", "to": "2026-10-03T00:00:00Z"});
+    let del = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        v.reading_delete(p(range), as_user(&a)),
+    )
+    .await
+    .expect("the range delete waited for a lock on a chunk outside its range")
+    .unwrap();
+    held.rollback().await.unwrap();
+    assert_eq!(del, json!({"deleted": 1, "kind": "heart_rate"}).to_string());
+
+    // Times and a range together still delete both.
+    add_hr(&v, &a, "2026-10-02T07:00:00Z", 61).await;
+    let both = json!({"kind": "heart_rate", "times": ["2001-01-01T07:00:00Z"],
+                      "from": "2026-10-01T00:00:00Z", "to": "2026-10-03T00:00:00Z"});
+    let del = v.reading_delete(p(both), as_user(&a)).await.unwrap();
+    assert_eq!(del, json!({"deleted": 2, "kind": "heart_rate"}).to_string());
+}
+
 #[tokio::test]
 async fn other_users_rows_are_invisible_and_untouchable() {
     let (v, _, _) = setup().await;
