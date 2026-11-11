@@ -105,6 +105,7 @@ export interface ToolArgs {
 	workout_add_past: WorkoutAddPastArgs;
 	workout_current: WorkoutCurrentArgs;
 	workout_finish: WorkoutFinishArgs;
+	workout_get: WorkoutGetArgs;
 	workout_list: WorkoutListArgs;
 	workout_start: WorkoutStartArgs;
 	workout_update: WorkoutUpdateArgs;
@@ -165,6 +166,10 @@ export interface BodyNoteListArgs {
 	 * To (exclusive).
 	 */
 	to?: string | null;
+	/**
+	 * Only notes linked to this workout.
+	 */
+	workout_id?: number | null;
 }
 /**
  * Correct a body note's location, severity, time, notes or workout.
@@ -1198,6 +1203,16 @@ export interface WorkoutFinishArgs {
 	owner?: string;
 }
 /**
+ * One workout by id with all its sets, grouped by exercise.
+ */
+export interface WorkoutGetArgs {
+	/**
+	 * Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.
+	 */
+	owner?: string;
+	workout_id: number;
+}
+/**
  * Past workouts with their sets, filterable by gym, exercise and date.
  */
 export interface WorkoutListArgs {
@@ -1315,6 +1330,7 @@ export const ownerTools: ReadonlySet<ToolName> = new Set([
 	'workout_add_past',
 	'workout_current',
 	'workout_finish',
+	'workout_get',
 	'workout_list',
 	'workout_start',
 	'workout_update'
@@ -1343,5 +1359,6 @@ export const readOnlyTools: ReadonlySet<ToolName> = new Set([
 	'summary',
 	'training_overview',
 	'workout_current',
+	'workout_get',
 	'workout_list'
 ]);

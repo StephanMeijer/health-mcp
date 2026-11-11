@@ -4,7 +4,7 @@
  */
 
 import type { KindInfo } from '#lib/kinds.js';
-import type { Kind } from './tools.gen.js';
+import type { Kind, LoadBasis, SetType } from './tools.gen.js';
 
 export type Access = 'none' | 'ro' | 'rw';
 
@@ -44,6 +44,92 @@ export interface Alternatives {
 		shared_secondary: string[];
 		equipment: string | null;
 	}[];
+}
+
+/** One set as every view shows it (src/gym/workout.rs, SET_JSON, plus set_id/set_number/performed_at in workout_json). */
+export interface WorkoutSet {
+	set_id: number;
+	/** 1, 2, … per exercise, in the order performed. */
+	set_number: number;
+	performed_at: string;
+	reps: number | null;
+	weight_kg: number | null;
+	duration_s: number | null;
+	rpe: number | null;
+	rest_s: number | null;
+	set_type: SetType;
+	unilateral: boolean;
+	/** Null is the default convention ('default' is stored as null). */
+	load_basis: Exclude<LoadBasis, 'default'> | null;
+	distance_m: number | null;
+	intensity: string | null;
+	avg_hr: number | null;
+	max_hr: number | null;
+	calories: number | null;
+	avg_incline_pct: number | null;
+	max_incline_pct: number | null;
+	avg_speed_kmh: number | null;
+	max_speed_kmh: number | null;
+	machine: string | null;
+	variant: string | null;
+	time_estimated: boolean;
+	notes: string | null;
+}
+
+/** workout_list rows, workout_add_past and workout_update, and inside the others (src/gym/workout.rs, workout_json). */
+export interface Workout {
+	workout_id: number;
+	gym: { id: number; name: string };
+	started_at: string;
+	/** Null while it is open. */
+	finished_at: string | null;
+	finish_reason: 'manual' | 'stale' | 'superseded' | null;
+	time_estimated: boolean;
+	notes: string | null;
+	set_count: number;
+	/** In the order first trained; sets in the order performed. */
+	exercises: { exercise_id: number; exercise: string; sets: WorkoutSet[] }[];
+}
+
+/** An open workout closed (or, from workout_current, about to be) for inactivity (src/gym/workout.rs, close_stale). */
+export interface ClosedStale {
+	workout_id: number;
+	gym: string;
+	/** "deleted (no sets, no notes)", "auto-finished (stale)", or "stale: will be …" from workout_current. */
+	action: string;
+	last_activity: string;
+	sets: number;
+}
+
+/** workout_current (src/gym/workout.rs, current). */
+export interface WorkoutCurrent {
+	open_workout: Workout | null;
+	closed_stale: ClosedStale | null;
+}
+
+/** workout_start (src/gym/workout.rs, start). */
+export interface WorkoutStartResult {
+	status: 'started' | 'resumed';
+	workout: Workout;
+	superseded?: { workout_id: number; gym: string } | null;
+	closed_stale: ClosedStale | null;
+}
+
+/** set_add (src/gym/workout.rs, set_add). */
+export interface SetAddResult {
+	added: number;
+	machine: string | null;
+	machine_source: 'given' | 'last_used_here' | 'none';
+	variant: string | null;
+	variant_source: 'given' | 'last_used_here' | 'none';
+	workout: Workout;
+	started_at_moved_back: boolean;
+	closed_stale: ClosedStale | null;
+}
+
+/** set_update and set_delete with set_ids (with set_id they return the Workout) (src/gym/workout.rs, touched_json). */
+export interface SetBatchResult {
+	workouts: Workout[];
 }
 
 export type Goal = 'strength' | 'hypertrophy' | 'endurance' | 'general';

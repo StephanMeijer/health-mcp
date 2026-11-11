@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const { tool, ToolUserError, ToolRetryError, ToolServerError, retryable } =
+const { tool, ToolUserError, ToolRetryError, ToolServerError, retryable, errorJson } =
 	await import('./client.js');
 
 function reply(status: number, body: unknown) {
@@ -56,5 +56,26 @@ describe('tool', () => {
 		expect(retryable(0, new ToolRetryError('x'))).toBe(true);
 		expect(retryable(3, new ToolRetryError('x'))).toBe(false);
 		expect(retryable(0, new ToolUserError('x'))).toBe(false);
+	});
+});
+
+describe('errorJson', () => {
+	it('reads the JSON inside a refusal', () => {
+		const e = new ToolUserError(
+			JSON.stringify({
+				error: 'a workout is still open at Gym A (3 sets)',
+				open_workout: { workout_id: 4 }
+			})
+		);
+		expect(errorJson(e)).toEqual({
+			error: 'a workout is still open at Gym A (3 sets)',
+			open_workout: { workout_id: 4 }
+		});
+	});
+
+	it('is null for a plain message or another error', () => {
+		expect(errorJson(new ToolUserError('no gym with id 9'))).toBeNull();
+		expect(errorJson(new ToolUserError('{not json'))).toBeNull();
+		expect(errorJson(new ToolServerError('{}'))).toBeNull();
 	});
 });

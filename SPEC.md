@@ -372,6 +372,8 @@ The app calls the same tools as MCP clients, with the same arguments and results
 The gym tools (`settings_*`, `gym_*`, `exercise_*`, `workout_*`, `set_*`, `body_note_*`, `training_overview`,
 `muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives`) come from
 gym-mcp unchanged, apart from its `measurement_*` tools, which are dropped (body fat and blood pressure are readings).
+Added here for the web app's workout page: `workout_get` (one workout by id, in the shape of a `workout_list` row;
+"no workout with id N" for an unknown or another user's id) and `body_note_list`'s `workout_id` filter.
 Code: `src/gym/`. Usage rules for the model are in the server instructions (`src/gym/tools.rs`, `INSTRUCTIONS`).
 
 - **Schema:** plain tables in schema `gym` (migration 0009, gym-mcp's schema after its migration 0019):

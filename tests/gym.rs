@@ -2043,6 +2043,15 @@ async fn body_notes_round_trip(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(knee.as_array().unwrap().len(), 1);
+    let linked = body_note::body_note_list(&app, ME, a(json!({"workout_id": wid})))
+        .await
+        .unwrap();
+    assert_eq!(
+        linked.as_array().unwrap().len(),
+        1,
+        "only the note linked to the workout"
+    );
+    assert_eq!(linked[0]["id"], id);
 
     let up = body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 6})))
         .await
@@ -2087,6 +2096,37 @@ async fn body_notes_round_trip(pool: PgPool) {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn workout_get_returns_one_of_your_workouts(pool: PgPool) {
+    let app = app(pool).await;
+    seed(&app).await;
+    let w = workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let wid = w["workout"]["workout_id"].as_i64().unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "Leg press", "sets": [{"reps": 10, "weight_kg": 100}]})),
+    )
+    .await
+    .unwrap();
+
+    let got = search::workout_get(&app, ME, a(json!({"workout_id": wid})))
+        .await
+        .unwrap();
+    let listed = search::workout_list(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(got, listed[0], "the same shape as a workout_list row");
+    assert_eq!(got["set_count"], 1);
+
+    let msg = user_msg(search::workout_get(&app, ME, a(json!({"workout_id": wid + 1000}))).await);
+    assert_eq!(msg, format!("no workout with id {}", wid + 1000));
+    let msg = user_msg(search::workout_get(&app, "bob", a(json!({"workout_id": wid}))).await);
+    assert_eq!(
+        msg,
+        format!("no workout with id {wid}"),
+        "another user's workout is not found"
     );
 }
 

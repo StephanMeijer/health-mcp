@@ -120,6 +120,14 @@
             "string",
             "null"
           ]
+        },
+        "workout_id": {
+          "description": "Only notes linked to this workout.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -3147,6 +3155,32 @@
       "type": "object"
     },
     "name": "workout_finish"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Show workout"
+    },
+    "description": "One workout by id with all its sets, grouped by exercise.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "owner": {
+          "description": "Email of someone who shared their data with you (see share_list): run this on their data instead of your own. Omit for your own.",
+          "type": "string"
+        },
+        "workout_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "workout_id"
+      ],
+      "type": "object"
+    },
+    "name": "workout_get"
   },
   {
     "annotations": {

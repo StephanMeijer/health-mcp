@@ -1,7 +1,7 @@
 import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
 import { toast } from 'svelte-sonner';
 import { logbook } from '#lib/logbook.svelte.js';
-import { tool, ToolUserError } from './client.js';
+import { errorJson, tool, ToolUserError } from './client.js';
 import { ownerTools, type ToolArgs, type ToolName } from './tools.gen.js';
 
 type Args<N extends ToolName> = Omit<ToolArgs[N], 'owner'>;
@@ -56,7 +56,9 @@ export function toolMutation<T, N extends ToolName = ToolName>(
 		// A 401 never gets here: tool() sends the browser to the login and never settles.
 		onError: (e: Error) => {
 			toast.error(
-				e instanceof ToolUserError ? e.message : 'That didn’t work. Try again in a moment.'
+				e instanceof ToolUserError
+					? (errorJson(e)?.error ?? e.message)
+					: 'That didn’t work. Try again in a moment.'
 			);
 		}
 	}));

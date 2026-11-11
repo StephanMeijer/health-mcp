@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { toolMutation, toolQuery } from '#lib/api/query.svelte.js';
 	import type { BodyNote } from '#lib/api/results.js';
 	import ConfirmDelete from '#lib/components/confirm-delete.svelte';
@@ -8,7 +9,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { muscleLabel } from '#lib/muscles.js';
-	import BodyNoteDialog from './body-note-dialog.svelte';
+	import BodyNoteDialog from '#lib/components/body-note-dialog.svelte';
 
 	let { readonly = false }: { readonly?: boolean } = $props();
 
@@ -93,8 +94,12 @@
 					<Table.Cell class="max-w-xs whitespace-normal text-muted-foreground">{n.notes}</Table.Cell
 					>
 					<Table.Cell class="tabular-nums">
-						<!-- shortcut: a plain id; link it once workouts have pages (#104). -->
-						{n.workout_id === null ? '' : `#${n.workout_id}`}
+						{#if n.workout_id !== null}
+							<a
+								class="underline-offset-4 hover:underline"
+								href={resolve('/workouts/[id]', { id: String(n.workout_id) })}>#{n.workout_id}</a
+							>
+						{/if}
 					</Table.Cell>
 					{#if !readonly}
 						<Table.Cell class="text-right whitespace-nowrap">

@@ -99,6 +99,15 @@ async fn access_follows_the_level_per_domain() {
     assert!(!ok(&db, &g, "gym_list", json!({})).await.to_string().contains("Home"));
     let e = err(&db, &g, "gym_create", as_owner(json!({"name": "Mine"}))).await;
     assert!(e.contains("read-only"), "{e}");
+    let listed = ok(&db, &g, "workout_list", as_owner(json!({}))).await;
+    let wid = &listed[0]["workout_id"];
+    let got = ok(&db, &g, "workout_get", as_owner(json!({"workout_id": wid}))).await;
+    assert_eq!(got, listed[0], "workout_get reads a shared logbook");
+    let e = err(&db, &g, "workout_get", json!({"workout_id": wid})).await;
+    assert!(
+        e.contains("no workout with id"),
+        "not in the grantee's own logbook: {e}"
+    );
     // Vitals not shared: neither typed tools nor the SQL views.
     let e = err(&db, &g, "reading_list", as_owner(json!({"kind": "heart_rate"}))).await;
     assert!(e.contains("not shared their vitals"), "{e}");

@@ -15,7 +15,16 @@ export function plateFor(kg: number | null | undefined): Plate | null {
 	return BANDS.find(([max]) => kg < max)?.[1] ?? 25;
 }
 
+// Whole class names, so Tailwind's scanner finds them (it can't see `bg-plate-${plate}`).
+const CLASS: Record<Plate, string> = {
+	25: 'bg-plate-25',
+	20: 'bg-plate-20',
+	15: 'bg-plate-15',
+	10: 'bg-plate-10',
+	5: 'bg-plate-5'
+};
+
 /** The Tailwind background class for a plate, from the theme tokens in layout.css. */
 export function plateClass(plate: Plate | null): string {
-	return plate === null ? 'bg-transparent' : `bg-plate-${plate}`;
+	return plate === null ? 'bg-transparent' : CLASS[plate];
 }

@@ -7,10 +7,10 @@
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { MUSCLE_GROUPS } from '#lib/muscles.js';
-	import { addNoteArgs, noteForm, updateNoteArgs } from './settings.js';
+	import { addNoteArgs, noteForm, updateNoteArgs } from '#lib/body-notes.js';
 
-	/** Adds a body note, or edits `note` when given. */
-	let { note }: { note?: BodyNote } = $props();
+	/** Adds a body note (linked to `workoutId` when given), or edits `note` when given. */
+	let { note, workoutId }: { note?: BodyNote; workoutId?: number } = $props();
 
 	let open = $state(false);
 	let form = $state(noteForm());
@@ -28,7 +28,7 @@
 		// On an error the toast says why and the dialog stays open with the input.
 		const close = { onSuccess: () => (open = false) };
 		if (note) update.mutate(updateNoteArgs(note, form), close);
-		else add.mutate(addNoteArgs(form), close);
+		else add.mutate({ ...addNoteArgs(form), workout_id: workoutId }, close);
 	}
 </script>
 

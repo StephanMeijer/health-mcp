@@ -68,6 +68,8 @@ pub struct BodyNoteListArgs {
     pub from: Option<String>,
     /// To (exclusive).
     pub to: Option<String>,
+    /// Only notes linked to this workout.
+    pub workout_id: Option<i64>,
 }
 
 pub async fn body_note_list(app: &App, owner: &str, a: BodyNoteListArgs) -> AppResult<Value> {
@@ -77,12 +79,14 @@ pub async fn body_note_list(app: &App, owner: &str, a: BodyNoteListArgs) -> AppR
          WHERE owner_sub = $1
            AND ($2::text IS NULL OR location ILIKE '%' || btrim($2) || '%')
            AND noted_at >= coalesce($3::timestamptz, '-infinity')
-           AND noted_at < coalesce($4::timestamptz, 'infinity')"
+           AND noted_at < coalesce($4::timestamptz, 'infinity')
+           AND ($5::bigint IS NULL OR workout_id = $5)"
     )))
     .bind(owner)
     .bind(&a.location)
     .bind(&a.from)
     .bind(&a.to)
+    .bind(a.workout_id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
