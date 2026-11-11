@@ -524,19 +524,27 @@ impl Health {
             _ => return Err("give either `times`, or both `from` and `to`".into()),
         };
         let (t, filter) = (p.kind.table(), p.kind.filter());
+        // One statement per form: OR-ing them stops TimescaleDB excluding chunks, so a range delete locked every
+        // chunk of the table and could deadlock with compress_chunk.
+        let conds = [
+            (!p.times.is_empty()).then_some("time = ANY($1)"),
+            range.map(|_| "time >= $2 AND time < $3"),
+        ];
         let mut tx = self.db.app_tx().await.map_err(db_err)?;
-        let n = sqlx::query(AssertSqlSafe(format!(
-            "DELETE FROM vitals_data.{t}
-             WHERE user_id = $4 AND source = 'manual' AND (time = ANY($1) OR (time >= $2 AND time < $3)){filter}"
-        )))
-        .bind(&p.times)
-        .bind(range.map(|r| r.0))
-        .bind(range.map(|r| r.1))
-        .bind(user)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?
-        .rows_affected();
+        let mut n = 0;
+        for cond in conds.into_iter().flatten() {
+            n += sqlx::query(AssertSqlSafe(format!(
+                "DELETE FROM vitals_data.{t} WHERE user_id = $4 AND source = 'manual' AND {cond}{filter}"
+            )))
+            .bind(&p.times)
+            .bind(range.map(|r| r.0))
+            .bind(range.map(|r| r.1))
+            .bind(user)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        }
         tx.commit().await.map_err(db_err)?;
         Ok(json!({"deleted": n, "kind": p.kind.name()}).to_string())
     }
