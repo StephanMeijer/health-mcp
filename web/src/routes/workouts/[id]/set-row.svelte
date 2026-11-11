@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -21,18 +22,22 @@
 
 	/**
 	 * One set: what it was, and (when `editable`) a checkbox for bulk fixes and an inline editor that saves only the
-	 * fields that changed through `onsave`.
+	 * fields that changed through `onsave`. `comments` is how many comments its threads have; `oncomments` opens them.
 	 */
 	let {
 		set,
 		editable,
 		selected = $bindable(false),
-		onsave
+		onsave,
+		comments = 0,
+		oncomments
 	}: {
 		set: WorkoutSet;
 		editable: boolean;
 		selected?: boolean;
 		onsave: (args: Omit<SetUpdateArgs, 'owner'>) => Promise<unknown>;
+		comments?: number;
+		oncomments?: () => void;
 	} = $props();
 
 	let editing = $state(false);
@@ -103,6 +108,17 @@
 		<span class="ml-auto text-xs text-muted-foreground tabular-nums">
 			{set.time_estimated ? '~' : ''}{time(set.performed_at)}
 		</span>
+		{#if oncomments}
+			<Button
+				variant="ghost"
+				size="sm"
+				class="tabular-nums"
+				aria-label={comments
+					? `${comments} ${comments === 1 ? 'comment' : 'comments'} on set ${set.set_number}`
+					: `Comment on set ${set.set_number}`}
+				onclick={oncomments}><MessageSquareIcon aria-hidden="true" />{comments || ''}</Button
+			>
+		{/if}
 		{#if editable}
 			<Button
 				variant="ghost"

@@ -6,12 +6,13 @@
 	import ReadOnlyNote from '#lib/components/read-only-note.svelte';
 	import ExerciseForm from '#lib/components/exercise-form.svelte';
 	import ExercisePicker from '#lib/components/exercise-picker.svelte';
+	import ThreadList from '#lib/components/comments/thread-list.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import { toolMutation, toolQuery } from '#lib/api/query.svelte.js';
-	import type { Alternatives, Exercise, GymListItem } from '#lib/api/results.js';
+	import type { Alternatives, Exercise, GymListItem, Thread } from '#lib/api/results.js';
 	import { logbook } from '#lib/logbook.svelte.js';
 	import { muscleLabel } from '#lib/muscles.js';
 
@@ -31,6 +32,11 @@
 	const alternatives = toolQuery<Alternatives, 'exercise_alternatives'>(
 		'exercise_alternatives',
 		() => ({ exercise: id, gym: gym === CURRENT ? null : gym }),
+		{ enabled: () => exercise !== undefined }
+	);
+	const threads = toolQuery<Thread[], 'comment_list'>(
+		'comment_list',
+		() => ({ target: 'exercise', id: exercise?.id, include_resolved: true, limit: 100 }),
 		{ enabled: () => exercise !== undefined }
 	);
 	let gymLabel = $derived(
@@ -128,4 +134,8 @@
 			/>
 		</section>
 	</div>
+	<section class="mt-10 grid max-w-2xl gap-3" aria-labelledby="comments-title">
+		<h2 id="comments-title" class="text-lg font-semibold">Comments</h2>
+		<ThreadList target="exercise" id={exercise.id} threads={threads.data} error={threads.error} />
+	</section>
 {/if}

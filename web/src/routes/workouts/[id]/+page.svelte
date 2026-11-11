@@ -6,6 +6,7 @@
 	import ConfirmDelete from '#lib/components/confirm-delete.svelte';
 	import EmptyState from '#lib/components/empty-state.svelte';
 	import BodyNoteDialog from '#lib/components/body-note-dialog.svelte';
+	import ThreadList from '#lib/components/comments/thread-list.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -15,9 +16,17 @@
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
+	import * as Sheet from '#lib/components/ui/sheet/index.js';
 	import { ToolUserError } from '#lib/api/client.js';
 	import { toolMutation, toolQuery } from '#lib/api/query.svelte.js';
-	import type { BodyNote, GymListItem, SetAddResult, Workout } from '#lib/api/results.js';
+	import type {
+		BodyNote,
+		GymListItem,
+		SetAddResult,
+		Thread,
+		Workout,
+		WorkoutSet
+	} from '#lib/api/results.js';
 	import type { ToolName } from '#lib/api/tools.gen.js';
 	import { logbook } from '#lib/logbook.svelte.js';
 	import { muscleLabel } from '#lib/muscles.js';
@@ -94,6 +103,27 @@
 		workout_id: id
 	}));
 	let workoutNotes = $derived(notes.data ?? []);
+
+	// ---- comments: the workout's threads and its sets', in one call
+	// shortcut: a workout with more than 100 threads loses the oldest ones; page comment_list if that ever happens.
+	const comments = toolQuery<Thread[], 'comment_list'>('comment_list', () => ({
+		workout_id: id,
+		include_resolved: true,
+		limit: 100
+	}));
+	let workoutThreads = $derived(comments.data?.filter((t) => t.target === 'workout'));
+	let setThreads = $derived(
+		Map.groupBy(
+			(comments.data ?? []).filter((t) => t.set_id !== null),
+			(t) => t.set_id as number
+		)
+	);
+	const commentCount = (setId: number) =>
+		(setThreads.get(setId) ?? []).reduce(
+			(n, t) => n + t.comments.filter((c) => !c.deleted).length,
+			0
+		);
+	let sheetSet = $state<{ set: WorkoutSet; exercise: string } | null>(null);
 
 	const day = (iso: string) =>
 		new Date(iso).toLocaleDateString(undefined, {
@@ -241,6 +271,8 @@
 								editable={canWrite}
 								bind:selected={() => selected[s.set_id] ?? false, (v) => (selected[s.set_id] = v)}
 								onsave={(args) => change.mutateAsync(args)}
+								comments={commentCount(s.set_id)}
+								oncomments={() => (sheetSet = { set: s, exercise: ex.exercise })}
 							/>
 						{/each}
 					</ul>
@@ -251,6 +283,16 @@
 		{#if canWrite}
 			<AddSets workout={w} onadd={(args) => add.mutateAsync(args)} />
 		{/if}
+
+		<section class="grid gap-3" aria-labelledby="comments-title">
+			<h2 id="comments-title" class="font-semibold">Comments</h2>
+			<ThreadList
+				target="workout"
+				id={w.workout_id}
+				threads={workoutThreads}
+				error={comments.error}
+			/>
+		</section>
 
 		<section class="grid gap-3" aria-labelledby="notes-title">
 			<div class="flex flex-wrap items-center justify-between gap-2">
@@ -342,3 +384,22 @@
 		{/if}
 	</Dialog.Content>
 </Dialog.Root>
+
+<Sheet.Root open={sheetSet !== null} onOpenChange={(o) => !o && (sheetSet = null)}>
+	<Sheet.Content class="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-md">
+		{#if sheetSet}
+			<Sheet.Header>
+				<Sheet.Title>{sheetSet.exercise}, set {sheetSet.set.set_number}</Sheet.Title>
+				<Sheet.Description>Comments on this set.</Sheet.Description>
+			</Sheet.Header>
+			<div class="px-4 pb-4">
+				<ThreadList
+					target="set"
+					id={sheetSet.set.set_id}
+					threads={comments.data ? (setThreads.get(sheetSet.set.set_id) ?? []) : undefined}
+					error={comments.error}
+				/>
+			</div>
+		{/if}
+	</Sheet.Content>
+</Sheet.Root>
