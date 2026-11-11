@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/StephanMeijer/health-mcp/compare/v0.7.4...v0.7.5) - 2026-11-11
+
+### Fixed
+
+- *(web)* prefix the invite login cookie with __Host-
+- *(db)* readiness recovers on the first probe after a database restart
+
+### Other
+
+- *(vitals)* define the measurement kinds in one macro table
+- *(mcp)* refuse a wrong Host on /mcp
+- *(web)* link personal records with typed workout routes
+- *(readme)* back up before an upgrade and restore to roll back
+- *(readme)* explain how to notice failing phone uploads within hours
+
 ## [0.7.4](https://github.com/StephanMeijer/health-mcp/compare/v0.7.3...v0.7.4) - 2026-11-11
 
 ### Added
