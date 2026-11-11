@@ -64,6 +64,19 @@ export async function tool<N extends ToolName>(
 	}
 }
 
+/**
+ * The JSON some refusals carry in their message: workout_start with a workout open at another gym (`open_workout`),
+ * set_add without an open workout (`closed_stale`). Null for a plain message. `error` is the human part.
+ */
+export function errorJson(e: unknown): ({ error?: string } & Record<string, unknown>) | null {
+	if (!(e instanceof ToolUserError) || !e.message.startsWith('{')) return null;
+	try {
+		return JSON.parse(e.message);
+	} catch {
+		return null;
+	}
+}
+
 /** For TanStack Query's `retry`: only transient failures, at most 3 times. */
 export function retryable(failures: number, error: unknown): boolean {
 	return error instanceof ToolRetryError && failures < 3;

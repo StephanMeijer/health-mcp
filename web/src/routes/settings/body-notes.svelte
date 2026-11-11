@@ -8,7 +8,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { muscleLabel } from '#lib/muscles.js';
-	import BodyNoteDialog from './body-note-dialog.svelte';
+	import BodyNoteDialog from '#lib/components/body-note-dialog.svelte';
 
 	let { readonly = false }: { readonly?: boolean } = $props();
 
