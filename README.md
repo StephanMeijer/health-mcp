@@ -93,6 +93,30 @@ Don't give `vitals_reader` any grant on `vitals_data` or `gym`: chunks would inh
 For the phone apps, register public clients (`vitals-android`, `gym-android`) with PKCE, `offline_access` and
 `audience: ['<PUBLIC_URL>/api']` (snippet in SPEC.md, Ingest API). In an app, enter only `<PUBLIC_URL>`; it discovers the rest.
 
+### Monitoring
+
+The probes only tell you the process is up and the database is reachable. They stay green while every
+upload is rejected, for example after an IdP change breaks the token audience or an app update sends frames the
+server refuses. The phone keeps unsent frames for 7 days, so a failure nobody notices for a week loses data for good.
+Two cheap checks catch it within hours:
+
+1. **Upload freshness** (the main signal). Phone uploads are stored with `source = 'app'`; `manual` rows come from the
+   MCP write tools and `import` rows from importers, so neither says anything about the phone. Run this every hour or so:
+   ```sql
+   SELECT user_id, now() - max(time) AS since_last
+   FROM vitals_data.heart_rate
+   WHERE source = 'app' AND time > now() - interval '7 days'
+   GROUP BY user_id;
+   ```
+   Alert when a user's `since_last` is over 6 hours, or when a user who uses the app is missing from the result
+   (nothing in 7 days). Pick the threshold to match how often that user wears the strap: heart rate only arrives
+   while a device sends it, and an empty heartbeat batch stores nothing. The time filter keeps the query on the
+   recent chunks. Run it as the owner, an importer role or `vitals_app`; `vitals_reader` can't read `vitals_data`.
+2. **Ingest errors.** Alert on a sustained rate of 4xx/5xx responses to `POST /api/v1/ingest`, at your reverse proxy
+   or from the server's own log: every request outside the probes gets an INFO line in a `request` span with `method`,
+   `path` and `status` (no user, no query string). A run of `401`s points at the token audience or issuer, `400`s at
+   frames the server refuses, and `500`/`503` at the server or the database.
+
 ### Moving from gym-mcp
 
 Migration 0009 creates the gym tables (empty) in schema `gym`. Copy the data from the old gym database once:
