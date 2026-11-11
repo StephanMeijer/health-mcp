@@ -1151,6 +1151,28 @@ mod tests {
     }
     use serde_json::json;
 
+    /// The texts the AI reads list every kind, and each measurement kind in a "names unit" group.
+    #[test]
+    fn docs_list_every_kind_with_its_unit() {
+        let tools = Health::tool_list();
+        let add = tools.iter().find(|t| t.name == "reading_add").unwrap();
+        for (doc, text) in [
+            ("SCHEMA_DOC", SCHEMA_DOC),
+            ("reading_add", add.description.as_deref().unwrap()),
+        ] {
+            let groups: Vec<&str> = text.split([';', '.', '\n']).map(str::trim_end).collect();
+            let has = |g: &str, name: &str| g.split([' ', ',', ':']).any(|w| w == name);
+            for k in KINDS {
+                let (name, unit) = (k.name(), k.unit());
+                assert!(groups.iter().any(|g| has(g, name)), "{doc} misses {name}");
+                if let Some(unit) = unit {
+                    let listed = groups.iter().any(|g| has(g, name) && g.ends_with(&format!(" {unit}")));
+                    assert!(listed, "{doc} misses {name} with unit {unit}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn flattened_reading_keeps_time_out_of_unknown() {
         let r: Reading =
